@@ -1,4 +1,4 @@
-apiVersion: apps.example.com/v1alpha1 # ADJUST YOUR API GROUP
+apiVersion: apps.example.com/v1alpha1
 kind: Application
 metadata:
   name: my-sample-app
@@ -13,7 +13,6 @@ spec:
   ingress:
     host: "my-sample-app.example.com" # You'll need to set up DNS/hosts file for this to resolve
     path: "/"
-    # ingressClassName: "nginx" # If you have an Ingress controller like Nginx Ingress
   envVars:
     - name: APP_ENV
       value: "production"
