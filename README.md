@@ -171,108 +171,107 @@ graph LR
     ```
 
 3.  **Verify the Created Resources:**
-    *   **Check the `Application` status:**
-        ```sh
-        ⎈ kind-kind ~/g/s/g/s/application-lifecycle-manager (main)> kubectl23 get application -n application-lifecycle-manager-system
-        NAME            IMAGE               REPLICAS   INGRESSURL                          APPREADY   AGE
-        my-sample-app   nginx:1.25-alpine   1          http://my-sample-app.example.com/   True       6s
-        ```
-    *   **Check the `Application` output yaml structure:**
-        ```yaml
-        apiVersion: apps.example.com/v1alpha1
-        kind: Application
-        metadata:
-        creationTimestamp: "2025-05-17T12:52:36Z"
-        finalizers:
-        - apps.example.com/finalizer
-        generation: 1
-        name: my-sample-app
-        namespace: application-lifecycle-manager-system
-        resourceVersion: "12463"
-        uid: 3373362e-e7b5-4292-a715-40157cef69c9
-        spec:
-        containerPort: 80
-        envVars:
-        - name: APP_ENV
-            value: production
-        - name: GREETING
-            value: Hello from Application CR
-        image: nginx:1.25-alpine
-        ingress:
-            host: my-sample-app.example.com
-            path: /
-            pathType: Prefix
-        replicas: 1
-        resources:
-            limits:
-            cpu: 200m
-            memory: 256Mi
-            requests:
-            cpu: 100m
-            memory: 128Mi
-        service:
-            port: 8080
-            type: ClusterIP
-        status:
-        availableReplicas: 1
-        conditions:
-        - lastTransitionTime: "2025-05-17T12:52:52Z"
-            message: Application components are available.
-            observedGeneration: 1
-            reason: ComponentsReady
-            status: "True"
-            type: Available
-        - lastTransitionTime: "2025-05-17T12:52:52Z"
-            message: Application deployment is stable and complete.
-            observedGeneration: 1
-            reason: ComponentsReady
-            status: "True"
-            type: Progressing
-        - lastTransitionTime: "2025-05-17T12:52:39Z"
-            message: Application is fully provisioned and ready.
-            observedGeneration: 1
-            reason: ComponentsReady
-            status: "True"
-            type: Ready
-        - lastTransitionTime: "2025-05-17T12:52:39Z"
-            message: Application is not degraded.
-            observedGeneration: 1
-            reason: ComponentsReady
-            status: "False"
-            type: Degraded
-        deploymentName: my-sample-app-deployment
-        ingressName: my-sample-app-ingress
-        ingressURL: http://my-sample-app.example.com/
+*   **Check the `Application` status:**
+    ```sh
+    ⎈ kind-kind ~/g/s/g/s/application-lifecycle-manager (main)> kubectl get application -n application-lifecycle-manager-system
+    NAME            IMAGE               REPLICAS   INGRESSURL                          APPREADY   AGE
+    my-sample-app   nginx:1.25-alpine   1          http://my-sample-app.example.com/   True       6s
+    ```
+*   **Check the `Application` output yaml structure:**
+    ```yaml
+    apiVersion: apps.example.com/v1alpha1
+    kind: Application
+    metadata:
+    creationTimestamp: "2025-05-17T12:52:36Z"
+    finalizers:
+    - apps.example.com/finalizer
+    generation: 1
+    name: my-sample-app
+    namespace: application-lifecycle-manager-system
+    resourceVersion: "12463"
+    uid: 3373362e-e7b5-4292-a715-40157cef69c9
+    spec:
+    containerPort: 80
+    envVars:
+    - name: APP_ENV
+        value: production
+    - name: GREETING
+        value: Hello from Application CR
+    image: nginx:1.25-alpine
+    ingress:
+        host: my-sample-app.example.com
+        path: /
+        pathType: Prefix
+    replicas: 1
+    resources:
+        limits:
+        cpu: 200m
+        memory: 256Mi
+        requests:
+        cpu: 100m
+        memory: 128Mi
+    service:
+        port: 8080
+        type: ClusterIP
+    status:
+    availableReplicas: 1
+    conditions:
+    - lastTransitionTime: "2025-05-17T12:52:52Z"
+        message: Application components are available.
         observedGeneration: 1
-        serviceName: my-sample-app-service
-        ```
-    *   **Check the Deployment:**
-        ```sh
-        ⎈ kind-kind ~/g/s/g/s/application-lifecycle-manager (main)> kubectl get deploy -n application-lifecycle-manager-system my-sample-app-deployment
-        NAME                       READY   UP-TO-DATE   AVAILABLE   AGE
-        my-sample-app-deployment   1/1     1            1           3m46s
-        ```
-    *   **Check the Service:**
-        ```sh
-        ⎈ kind-kind ~/g/s/g/s/application-lifecycle-manager (main)> kubectl get svc -n application-lifecycle-manager-system my-sample-app-service
-        NAME                    TYPE        CLUSTER-IP     EXTERNAL-IP   PORT(S)    AGE
-        my-sample-app-service   ClusterIP   10.96.54.145   <none>        8080/TCP   4m23s
-        ```
-    *   **Check the Ingress (if configured):**
-        ```sh
-        ⎈ kind-kind ~/g/s/g/s/application-lifecycle-manager (main)> kubectl get ingress -n application-lifecycle-manager-system
-        NAME                    CLASS    HOSTS                       ADDRESS   PORTS   AGE
-        my-sample-app-ingress   <none>   my-sample-app.example.com             80      4m52s
-        ```
+        reason: ComponentsReady
+        status: "True"
+        type: Available
+    - lastTransitionTime: "2025-05-17T12:52:52Z"
+        message: Application deployment is stable and complete.
+        observedGeneration: 1
+        reason: ComponentsReady
+        status: "True"
+        type: Progressing
+    - lastTransitionTime: "2025-05-17T12:52:39Z"
+        message: Application is fully provisioned and ready.
+        observedGeneration: 1
+        reason: ComponentsReady
+        status: "True"
+        type: Ready
+    - lastTransitionTime: "2025-05-17T12:52:39Z"
+        message: Application is not degraded.
+        observedGeneration: 1
+        reason: ComponentsReady
+        status: "False"
+        type: Degraded
+    deploymentName: my-sample-app-deployment
+    ingressName: my-sample-app-ingress
+    ingressURL: http://my-sample-app.example.com/
+    observedGeneration: 1
+    serviceName: my-sample-app-service
+    ```
+*   **Check the Deployment:**
+    ```sh
+    ⎈ kind-kind ~/g/s/g/s/application-lifecycle-manager (main)> kubectl get deploy -n application-lifecycle-manager-system my-sample-app-deployment
+    NAME                       READY   UP-TO-DATE   AVAILABLE   AGE
+    my-sample-app-deployment   1/1     1            1           3m46s
+    ```
+*   **Check the Service:**
+    ```sh
+    ⎈ kind-kind ~/g/s/g/s/application-lifecycle-manager (main)> kubectl get svc -n application-lifecycle-manager-system my-sample-app-service
+    NAME                    TYPE        CLUSTER-IP     EXTERNAL-IP   PORT(S)    AGE
+    my-sample-app-service   ClusterIP   10.96.54.145   <none>        8080/TCP   4m23s
+    ```
+*   **Check the Ingress (if configured):**
+    ```sh
+    ⎈ kind-kind ~/g/s/g/s/application-lifecycle-manager (main)> kubectl get ingress -n application-lifecycle-manager-system
+    NAME                    CLASS    HOSTS                       ADDRESS   PORTS   AGE
+    my-sample-app-ingress   <none>   my-sample-app.example.com             80      4m52s
+    ```
 
 ### Cleaning Up
 
 1.  **Delete the `Application` CR:**
     This will trigger the controller to delete the associated `Deployment`, `Service`, and `Ingress` due to OwnerReferences.
     ```sh
-    kubectl delete -f examples/my-web-app.yaml
-    # or
-    # kubectl delete application my-nginx-app -n default
+    kubectl delete -f config/samples/apps_v1alpha1_application.yaml
+    
     ```
 
 2.  **Undeploy the Controller:**
