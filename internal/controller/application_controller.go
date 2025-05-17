@@ -78,7 +78,7 @@ type ApplicationReconciler struct {
 // +kubebuilder:rbac:groups="coordination.k8s.io",resources=leases,verbs=get;list;watch;create;update;patch;delete
 
 // updateFullStatus updates the entire status subresource, retrying on conflict.
-func (r *ApplicationReconciler) updateFullStatus(ctx context.Context, appCR *appsv1alpha1.Application, desiredStatus *appsv1alpha1.ApplicationStatus) (ctrl.Result, error) {
+func (r *ApplicationReconciler) updateFullStatus(ctx context.Context, appCR *appsv1alpha1.Application, desiredStatus *appsv1alpha1.ApplicationStatus) error {
 	logger := log.FromContext(ctx)
 
 	// Ensure ObservedGeneration is always set based on the CR we are reconciling
@@ -87,7 +87,7 @@ func (r *ApplicationReconciler) updateFullStatus(ctx context.Context, appCR *app
 	// Check if desired status is actually different from appCR.Status.
 	if reflect.DeepEqual(appCR.Status, *desiredStatus) {
 		logger.V(1).Info("Status is unchanged, skipping update.", "application", appCR.Name)
-		return ctrl.Result{}, nil
+		return nil
 	}
 
 	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
@@ -107,10 +107,10 @@ func (r *ApplicationReconciler) updateFullStatus(ctx context.Context, appCR *app
 
 	if err != nil {
 		logger.Error(err, "Failed to update Application status after multiple retries")
-		return ctrl.Result{}, err
+		return err
 	}
 	logger.Info("Successfully updated Application status", "application", appCR.Name)
-	return ctrl.Result{}, nil
+	return nil
 }
 
 func (r *ApplicationReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -351,10 +351,9 @@ func (r *ApplicationReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	var finalResult ctrl.Result = ctrl.Result{}
 
 	if statusNeedsUpdate {
-		logger.Info("Status requires update.", "application", app.Name)
-		finalResult, finalErr = r.updateFullStatus(ctx, app, currentStatus)
-		if finalErr != nil {
-			return finalResult, finalErr
+		updateErr := r.updateFullStatus(ctx, app, currentStatus) // Only gets error now
+		if updateErr != nil {
+			return ctrl.Result{}, updateErr // Requeue on status update failure
 		}
 	} else {
 		logger.V(1).Info("No status changes required for this reconciliation cycle.", "application", app.Name)
@@ -903,7 +902,8 @@ func updateConditionsFromDeployment(deployment *appsv1.Deployment, status *appsv
 	}
 	newProgressingStatus := metav1.ConditionFalse
 	newProgressingReason := ReasonDeploymentProgressing
-	newProgressingMessage := "Deployment is progressing."
+	var newProgressingMessage string // Declare without initial value
+
 	if depProgressingCond != nil {
 		if depProgressingCond.Status == corev1.ConditionTrue && depProgressingCond.Reason == "NewReplicaSetAvailable" {
 			newProgressingStatus = metav1.ConditionTrue
@@ -912,12 +912,13 @@ func updateConditionsFromDeployment(deployment *appsv1.Deployment, status *appsv
 			newProgressingMessage = fmt.Sprintf("Deployment progressing: %s", depProgressingCond.Message)
 		}
 	} else {
+		// If no Progressing condition from deployment, infer based on replica counts
 		if deployment.Status.UpdatedReplicas < desiredReplicas || deployment.Status.Replicas > deployment.Status.UpdatedReplicas {
 			newProgressingMessage = fmt.Sprintf("Deployment rollout in progress: updated %d/%d, total %d", deployment.Status.UpdatedReplicas, desiredReplicas, deployment.Status.Replicas)
 		} else if deployment.Status.AvailableReplicas < desiredReplicas {
 			newProgressingMessage = fmt.Sprintf("Deployment rollout appears complete but waiting for %d available replicas (currently %d).", desiredReplicas, deployment.Status.AvailableReplicas)
-		} else {
-			newProgressingStatus = metav1.ConditionTrue
+		} else { // Updated and Available counts match desired
+			newProgressingStatus = metav1.ConditionTrue // This should be set with newProgressingStatus earlier
 			newProgressingMessage = "Deployment rollout appears complete and all replicas available."
 		}
 	}

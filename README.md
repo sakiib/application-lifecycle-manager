@@ -61,19 +61,30 @@ The controller then takes over:
 ## 🧱 Architecture Diagram & Control Flow
 
 ```mermaid
-graph LR
+graph
     A[Application CRD] --> B(Controller);
     B --> C{Deployment};
     B --> D{Service};
     B --> E{Ingress};
     B --> F{Env Vars};
     C --> F{Env Vars};
-    style A fill:#f9f,stroke:#333,stroke-width:2px
-    style B fill:#ccf,stroke:#333,stroke-width:2px
-    style C fill:#fcc,stroke:#333,stroke-width:2px
-    style D fill:#fcc,stroke:#333,stroke-width:2px
-    style E fill:#fcc,stroke:#333,stroke-width:2px
-    style F fill:#fcc,stroke:#333,stroke-width:2px
+    subgraph Watched Events
+        C[Deployment] --> G(Deployment Events);
+        D[Service] --> H(Service Events);
+        E[Ingress] --> I(Ingress Events);
+    end
+    G --> B;
+    H --> B;
+    I --> B;
+    style A fill:#b0f0b0,stroke:#1c2c4c,stroke-width:4px,color:#000
+    style B fill:#b0c4de,stroke:#1c2c4c,stroke-width:4px,color:#000
+    style C fill:#f08080,stroke:#1c2c4c,stroke-width:4px,color:#000
+    style D fill:#f08080,stroke:#1c2c4c,stroke-width:4px,color:#000
+    style E fill:#f08080,stroke:#1c2c4c,stroke-width:4px,color:#000
+    style F fill:#f08080,stroke:#1c2c4c,stroke-width:4px,color:#000
+    style G fill:#FFFFE0,stroke:#1c2c4c,stroke-width:2px,color:#000
+    style H fill:#FFFFE0,stroke:#1c2c4c,stroke-width:2px,color:#000
+    style I fill:#FFFFE0,stroke:#1c2c4c,stroke-width:2px,color:#000
 ```
 
 1.  A **User** (or a CI/CD system) defines the desired state of their application by creating or updating an `Application` Custom Resource (CR) via the Kubernetes API Server.
