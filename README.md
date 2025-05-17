@@ -1,8 +1,6 @@
 # Application Lifecycle Manager for Kubernetes
 
-[![Build and Push Docker Image](https://github.com/sakiib/application-lifecycle-manager/actions/workflows/build-push.yaml/badge.svg)](https://github.com/sakiib/application-lifecycle-manager/actions/workflows/build-push.yaml)
-
-[![Tests](https://github.com/sakiib/application-lifecycle-manager/actions/workflows/test.yaml/badge.svg)](https://github.com/sakiib/application-lifecycle-manager/actions/workflows/test.yaml)
+[![Tests](https://github.com/sakiib/application-lifecycle-manager/actions/workflows/test.yaml/badge.svg)](https://github.com/sakiib/application-lifecycle-manager/actions/workflows/test.yaml) [![Build](https://github.com/sakiib/application-lifecycle-manager/actions/workflows/build-push.yaml/badge.svg)](https://github.com/sakiib/application-lifecycle-manager/actions/workflows/build-push.yaml)
 
 🎮 **Play the demo**
 ```sh
