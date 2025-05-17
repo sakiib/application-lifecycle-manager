@@ -62,18 +62,18 @@ The controller then takes over:
 
 ```mermaid
 graph LR
-    A[Application CR] --> B(Controller);
+    A[Application CRD] --> B(Controller);
     B --> C{Deployment};
     B --> D{Service};
     B --> E{Ingress};
     B --> F{Env Vars};
     C --> F{Env Vars};
-    style A fill:#b0f0b0,stroke:#1c2c4c,stroke-width:4px
-    style B fill:#b0c4de,stroke:#1c2c4c,stroke-width:4px
-    style C fill:#f08080,stroke:#1c2c4c,stroke-width:4px
-    style D fill:#f08080,stroke:#1c2c4c,stroke-width:4px
-    style E fill:#f08080,stroke:#1c2c4c,stroke-width:4px
-    style F fill:#f08080,stroke:#1c2c4c,stroke-width:4px
+    style A fill:#b0f0b0,stroke:#1c2c4c,stroke-width:4px,color:#000
+    style B fill:#b0c4de,stroke:#1c2c4c,stroke-width:4px,color:#000
+    style C fill:#f08080,stroke:#1c2c4c,stroke-width:4px,color:#000
+    style D fill:#f08080,stroke:#1c2c4c,stroke-width:4px,color:#000
+    style E fill:#f08080,stroke:#1c2c4c,stroke-width:4px,color:#000
+    style F fill:#f08080,stroke:#1c2c4c,stroke-width:4px,color:#000
 ```
 
 1.  A **User** (or a CI/CD system) defines the desired state of their application by creating or updating an `Application` Custom Resource (CR) via the Kubernetes API Server.
