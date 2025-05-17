@@ -37,12 +37,12 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
-	appsv1alpha1 "github.com/sakiib/application-lifecycle-manager/api/v1alpha1" // Ensure this is your correct import path
+	appsv1alpha1 "github.com/sakiib/application-lifecycle-manager/api/v1alpha1"
 )
 
 const (
 	applicationFinalizer        = "apps.example.com/finalizer"
-	ConditionTypeReady          = "Ready" // For the main Ready condition
+	ConditionTypeReady          = "Ready"                      // For the main Ready condition
 	ConditionAvailable          = "Available"
 	ConditionProgressing        = "Progressing"
 	ConditionDegraded           = "Degraded"
@@ -51,6 +51,7 @@ const (
 	ReasonDeploymentCreated     = "DeploymentCreated"
 	ReasonDeploymentUpdated     = "DeploymentUpdated"
 	ReasonDeploymentProgressing = "DeploymentProgressing"
+	ReasonDeploymentRolledOut   = "DeploymentRolledOut"
 	ReasonDeploymentFailed      = "DeploymentFailed"
 	ReasonServiceCreated        = "ServiceCreated"
 	ReasonServiceUpdated        = "ServiceUpdated"
@@ -81,7 +82,7 @@ type ApplicationReconciler struct {
 func (r *ApplicationReconciler) updateFullStatus(ctx context.Context, appCR *appsv1alpha1.Application, desiredStatus *appsv1alpha1.ApplicationStatus) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 
-	// Ensure ObservedGeneration is set on the desiredStatus before comparison/update
+	// Ensure ObservedGeneration is always set based on the CR we are reconciling
 	desiredStatus.ObservedGeneration = appCR.Generation
 
 	// Check if desired status is actually different from appCR.Status.
@@ -91,6 +92,7 @@ func (r *ApplicationReconciler) updateFullStatus(ctx context.Context, appCR *app
 	}
 
 	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		// Fetch the latest version of CR to apply status to
 		latestCR := &appsv1alpha1.Application{}
 		if getErr := r.Get(ctx, types.NamespacedName{Name: appCR.Name, Namespace: appCR.Namespace}, latestCR); getErr != nil {
 			logger.Error(getErr, "Failed to get latest Application for status update")
@@ -106,7 +108,7 @@ func (r *ApplicationReconciler) updateFullStatus(ctx context.Context, appCR *app
 
 	if err != nil {
 		logger.Error(err, "Failed to update Application status after multiple retries")
-		return ctrl.Result{}, err // Return error to requeue
+		return ctrl.Result{}, err
 	}
 	logger.Info("Successfully updated Application status", "application", appCR.Name)
 	return ctrl.Result{}, nil
@@ -160,116 +162,70 @@ func (r *ApplicationReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		return ctrl.Result{}, nil
 	}
 
-	currentStatus.ObservedGeneration = app.Generation // Set early, update if other status fields change
+	// At the beginning of each reconcile that's not a deletion, set ObservedGeneration.
+	// We'll decide later if a status update is actually needed based on other changes.
+	if currentStatus.ObservedGeneration != app.Generation {
+		currentStatus.ObservedGeneration = app.Generation
+		statusNeedsUpdate = true // Marking that at least OG changed
+	}
 
 	// Reconcile Deployment
-	deployment, err := r.reconcileDeployment(ctx, app)
-	if err != nil {
-		logger.Error(err, "Failed to reconcile Deployment")
-		errMsg := "Deployment reconciliation failed: " + err.Error()
-		if setApplicationCondition(currentStatus, ConditionDegraded, metav1.ConditionTrue, ReasonDeploymentFailed, errMsg, app.Generation) {
-			statusNeedsUpdate = true
-		}
-		if setApplicationCondition(currentStatus, ConditionAvailable, metav1.ConditionFalse, ReasonDeploymentFailed, errMsg, app.Generation) {
-			statusNeedsUpdate = true
-		}
-		if setApplicationCondition(currentStatus, ConditionProgressing, metav1.ConditionFalse, ReasonDeploymentFailed, errMsg, app.Generation) {
-			statusNeedsUpdate = true
-		}
-		if currentStatus.DeploymentName != "" {
-			currentStatus.DeploymentName = ""
-			statusNeedsUpdate = true
-		}
-		if currentStatus.AvailableReplicas != 0 {
-			currentStatus.AvailableReplicas = 0
-			statusNeedsUpdate = true
-		}
-		// No specific "Ready" condition here, as overall readiness depends on all components
-	} else {
-		if currentStatus.DeploymentName != deployment.Name {
-			currentStatus.DeploymentName = deployment.Name
-			statusNeedsUpdate = true
-		}
-		if currentStatus.AvailableReplicas != deployment.Status.AvailableReplicas {
-			currentStatus.AvailableReplicas = deployment.Status.AvailableReplicas
-			statusNeedsUpdate = true
-		}
-		if updateConditionsFromDeployment(deployment, currentStatus, app.Generation) {
-			statusNeedsUpdate = true
-		}
+	deployment, deploymentErr := r.reconcileDeployment(ctx, app)
+	if deploymentErr != nil {
+		logger.Error(deploymentErr, "Failed to reconcile Deployment")
+		errMsg := "Deployment reconciliation failed: " + deploymentErr.Error()
+		if setApplicationCondition(currentStatus, ConditionDegraded, metav1.ConditionTrue, ReasonDeploymentFailed, errMsg, app.Generation) { statusNeedsUpdate = true }
+		if setApplicationCondition(currentStatus, ConditionAvailable, metav1.ConditionFalse, ReasonDeploymentFailed, errMsg, app.Generation) { statusNeedsUpdate = true }
+		if setApplicationCondition(currentStatus, ConditionProgressing, metav1.ConditionFalse, ReasonDeploymentFailed, errMsg, app.Generation) { statusNeedsUpdate = true }
+		if currentStatus.DeploymentName != "" { currentStatus.DeploymentName = ""; statusNeedsUpdate = true }
+		if currentStatus.AvailableReplicas != 0 { currentStatus.AvailableReplicas = 0; statusNeedsUpdate = true }
+	} else if deployment != nil { // Deployment reconciled successfully (created or updated or found up-to-date)
+		if currentStatus.DeploymentName != deployment.Name { currentStatus.DeploymentName = deployment.Name; statusNeedsUpdate = true }
+		if currentStatus.AvailableReplicas != deployment.Status.AvailableReplicas { currentStatus.AvailableReplicas = deployment.Status.AvailableReplicas; statusNeedsUpdate = true }
+		if updateConditionsFromDeployment(deployment, currentStatus, app.Generation) { statusNeedsUpdate = true }
 	}
-	deploymentErr := err // Store deployment error to return later if it's the primary issue
 
 	// Reconcile Service
-	var service *corev1.Service // Declare service to use its name later
-	var serviceErr error
-	service, serviceErr = r.reconcileService(ctx, app)
+	service, serviceErr := r.reconcileService(ctx, app)
 	if serviceErr != nil {
 		logger.Error(serviceErr, "Failed to reconcile Service")
 		errMsg := "Service reconciliation failed: " + serviceErr.Error()
-		if setApplicationCondition(currentStatus, ConditionDegraded, metav1.ConditionTrue, ReasonServiceError, errMsg, app.Generation) {
-			statusNeedsUpdate = true
-		}
-		if currentStatus.ServiceName != "" {
-			currentStatus.ServiceName = ""
-			statusNeedsUpdate = true
-		}
+		if setApplicationCondition(currentStatus, ConditionDegraded, metav1.ConditionTrue, ReasonServiceError, errMsg, app.Generation) { statusNeedsUpdate = true }
+		if currentStatus.ServiceName != "" { currentStatus.ServiceName = ""; statusNeedsUpdate = true }
 	} else if service != nil {
-		if currentStatus.ServiceName != service.Name {
-			currentStatus.ServiceName = service.Name
-			statusNeedsUpdate = true
-		}
+		if currentStatus.ServiceName != service.Name { currentStatus.ServiceName = service.Name; statusNeedsUpdate = true }
 	}
 
 	// Reconcile Ingress (if specified)
 	var ingressErr error
 	if app.Spec.Ingress != nil {
-		if service == nil && serviceErr == nil { // Service must exist and be healthy for Ingress
-			serviceErr = fmt.Errorf("service %s not found or not ready, cannot create Ingress", app.Name+"-service")
-			logger.Error(serviceErr, "Prerequisite for Ingress not met")
-			if setApplicationCondition(currentStatus, ConditionDegraded, metav1.ConditionTrue, ReasonIngressError, serviceErr.Error(), app.Generation) {
-				statusNeedsUpdate = true
-			}
-		}
-
-		if serviceErr == nil { // Only proceed if service reconciliation was successful
+		// Service must exist and be healthy (no error during its reconcile) for Ingress
+		if serviceErr != nil {
+			ingressErr = fmt.Errorf("service reconciliation failed, cannot proceed with Ingress: %w", serviceErr)
+			logger.Error(ingressErr, "Prerequisite for Ingress not met")
+			if setApplicationCondition(currentStatus, ConditionDegraded, metav1.ConditionTrue, ReasonIngressError, ingressErr.Error(), app.Generation) { statusNeedsUpdate = true }
+		} else if service == nil { // Should not happen if serviceErr is nil, but defensive
+			ingressErr = fmt.Errorf("service object is nil, cannot create Ingress for service %s", app.Name+"-service")
+			logger.Error(ingressErr, "Prerequisite for Ingress not met")
+			if setApplicationCondition(currentStatus, ConditionDegraded, metav1.ConditionTrue, ReasonIngressError, ingressErr.Error(), app.Generation) { statusNeedsUpdate = true }
+		} else { // Service seems okay, proceed with Ingress
 			var ingress *networkingv1.Ingress
 			ingress, ingressErr = r.reconcileIngress(ctx, app, service.Name)
 			if ingressErr != nil {
 				logger.Error(ingressErr, "Failed to reconcile Ingress")
 				errMsg := "Ingress reconciliation failed: " + ingressErr.Error()
-				if setApplicationCondition(currentStatus, ConditionDegraded, metav1.ConditionTrue, ReasonIngressError, errMsg, app.Generation) {
-					statusNeedsUpdate = true
-				}
-				if currentStatus.IngressName != "" {
-					currentStatus.IngressName = ""
-					statusNeedsUpdate = true
-				}
-				if currentStatus.IngressURL != "" {
-					currentStatus.IngressURL = ""
-					statusNeedsUpdate = true
-				}
+				if setApplicationCondition(currentStatus, ConditionDegraded, metav1.ConditionTrue, ReasonIngressError, errMsg, app.Generation) { statusNeedsUpdate = true }
+				if currentStatus.IngressName != "" { currentStatus.IngressName = ""; statusNeedsUpdate = true }
+				if currentStatus.IngressURL != "" { currentStatus.IngressURL = ""; statusNeedsUpdate = true }
 			} else if ingress != nil {
-				if currentStatus.IngressName != ingress.Name {
-					currentStatus.IngressName = ingress.Name
-					statusNeedsUpdate = true
-				}
+				if currentStatus.IngressName != ingress.Name { currentStatus.IngressName = ingress.Name; statusNeedsUpdate = true }
 				var newIngressURL string
 				if len(ingress.Spec.Rules) > 0 && ingress.Spec.Rules[0].Host != "" {
-					scheme := "http"
-					if len(ingress.Spec.TLS) > 0 {
-						scheme = "https"
-					}
-					path := "/"
-					if len(ingress.Spec.Rules[0].HTTP.Paths) > 0 {
-						path = ingress.Spec.Rules[0].HTTP.Paths[0].Path
-					}
+					scheme := "http"; if len(ingress.Spec.TLS) > 0 { scheme = "https" }
+					path := "/"; if len(ingress.Spec.Rules[0].HTTP.Paths) > 0 { path = ingress.Spec.Rules[0].HTTP.Paths[0].Path }
 					newIngressURL = fmt.Sprintf("%s://%s%s", scheme, ingress.Spec.Rules[0].Host, path)
 				}
-				if currentStatus.IngressURL != newIngressURL {
-					currentStatus.IngressURL = newIngressURL
-					statusNeedsUpdate = true
-				}
+				if currentStatus.IngressURL != newIngressURL { currentStatus.IngressURL = newIngressURL; statusNeedsUpdate = true }
 			}
 		}
 	} else { // Ingress not specified in spec, ensure it's cleaned up
@@ -277,60 +233,43 @@ func (r *ApplicationReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 			ingressErr = err // Capture error from deletion attempt
 			logger.Error(ingressErr, "Failed to ensure Ingress is deleted")
 			errMsg := "Failed to delete old ingress: " + ingressErr.Error()
-			if setApplicationCondition(currentStatus, ConditionDegraded, metav1.ConditionTrue, ReasonIngressError, errMsg, app.Generation) {
-				statusNeedsUpdate = true
-			}
+			if setApplicationCondition(currentStatus, ConditionDegraded, metav1.ConditionTrue, ReasonIngressError, errMsg, app.Generation) { statusNeedsUpdate = true }
 		}
-		if currentStatus.IngressName != "" {
-			currentStatus.IngressName = ""
-			statusNeedsUpdate = true
-		}
-		if currentStatus.IngressURL != "" {
-			currentStatus.IngressURL = ""
-			statusNeedsUpdate = true
-		}
+		if currentStatus.IngressName != "" { currentStatus.IngressName = ""; statusNeedsUpdate = true }
+		if currentStatus.IngressURL != "" { currentStatus.IngressURL = ""; statusNeedsUpdate = true }
 	}
 
-	// Set Overall Ready condition based on the individual component conditions
-	appIsReady := isAppReady(currentStatus) // isAppReady checks Available, Progressing (True), and Degraded (False)
-	if appIsReady {
-		if setApplicationCondition(currentStatus, ConditionTypeReady, metav1.ConditionTrue, ReasonComponentsReady, "Application is fully provisioned and ready.", app.Generation) {
-			statusNeedsUpdate = true
-		}
-		// Ensure other top-level summary conditions are consistent
-		if setApplicationCondition(currentStatus, ConditionAvailable, metav1.ConditionTrue, ReasonComponentsReady, "Application components are available.", app.Generation) {
-			statusNeedsUpdate = true
-		}
-		if setApplicationCondition(currentStatus, ConditionProgressing, metav1.ConditionTrue, ReasonComponentsReady, "Application deployment is stable and complete.", app.Generation) {
-			statusNeedsUpdate = true
-		}
-		if setApplicationCondition(currentStatus, ConditionDegraded, metav1.ConditionFalse, ReasonComponentsReady, "Application is not degraded.", app.Generation) {
-			statusNeedsUpdate = true
-		}
-	} else {
-		// Determine a more specific reason why it's not ready for the Ready=False condition
-		var notReadyReason string = ReasonComponentsNotReady
-		var notReadyMessage string = "Application is not yet ready."
+	// Determine overall application readiness and set the "Ready" condition
+	appIsCurrentlyReady := isAppReady(currentStatus) // Check conditions based on component reconciliation results
 
-		// Prioritize Degraded condition message
+	if appIsCurrentlyReady {
+		if setApplicationCondition(currentStatus, ConditionTypeReady, metav1.ConditionTrue, ReasonComponentsReady, "Application is fully provisioned and ready.", app.Generation) { statusNeedsUpdate = true }
+		// Ensure other summary conditions are consistent with Ready=True
+		if setApplicationCondition(currentStatus, ConditionAvailable, metav1.ConditionTrue, ReasonComponentsReady, "Application components are available.", app.Generation) {statusNeedsUpdate = true}
+		if setApplicationCondition(currentStatus, ConditionProgressing, metav1.ConditionTrue, ReasonComponentsReady, "Application deployment is stable and complete.", app.Generation) {statusNeedsUpdate = true}
+		if setApplicationCondition(currentStatus, ConditionDegraded, metav1.ConditionFalse, ReasonComponentsReady, "Application is not degraded.", app.Generation) {statusNeedsUpdate = true}
+	} else {
+		var notReadyReason string = ReasonComponentsNotReady
+		var notReadyMessage string = "Application is not yet ready; see other conditions for details."
+
+		// Check for specific reasons why it's not ready
 		for _, cond := range currentStatus.Conditions {
 			if cond.Type == ConditionDegraded && cond.Status == metav1.ConditionTrue {
-				notReadyReason = cond.Reason
+				notReadyReason = cond.Reason 
 				notReadyMessage = fmt.Sprintf("Application is not ready: Degraded - %s", cond.Message)
 				break
 			}
 		}
-		// If not degraded, check if still progressing
-		if notReadyReason == ReasonComponentsNotReady { // Only if not already set by Degraded
+		if notReadyReason == ReasonComponentsNotReady { // If not degraded, check if still progressing
 			for _, cond := range currentStatus.Conditions {
 				if cond.Type == ConditionProgressing && cond.Status == metav1.ConditionFalse {
-					notReadyReason = cond.Reason
+					notReadyReason = cond.Reason 
 					notReadyMessage = fmt.Sprintf("Application is not ready: Progressing - %s", cond.Message)
 					break
 				}
 			}
 		}
-		// If not degraded and not progressing=false, check if available is false
+		// If not degraded and not progressing=false, it might be unavailable
 		if notReadyReason == ReasonComponentsNotReady {
 			for _, cond := range currentStatus.Conditions {
 				if cond.Type == ConditionAvailable && cond.Status == metav1.ConditionFalse {
@@ -340,51 +279,55 @@ func (r *ApplicationReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 				}
 			}
 		}
-
-		if setApplicationCondition(currentStatus, ConditionTypeReady, metav1.ConditionFalse, notReadyReason, notReadyMessage, app.Generation) {
-			statusNeedsUpdate = true
-		}
+		if setApplicationCondition(currentStatus, ConditionTypeReady, metav1.ConditionFalse, notReadyReason, notReadyMessage, app.Generation) { statusNeedsUpdate = true }
 	}
 
-	// Final status update if anything changed
+	// Final status update if anything changed during this reconcile loop
 	var finalErr error
 	var finalResult ctrl.Result = ctrl.Result{}
 
-	if statusNeedsUpdate || app.Status.ObservedGeneration != currentStatus.ObservedGeneration { // Ensure OG is part of check
-		// currentStatus.ObservedGeneration was already set if needed
+	if statusNeedsUpdate {
 		logger.Info("Status requires update.", "application", app.Name)
 		finalResult, finalErr = r.updateFullStatus(ctx, app, currentStatus)
 		if finalErr != nil {
-			// If status update fails, that's the error we return for requeue
-			return finalResult, finalErr
+			return finalResult, finalErr // Error from status update
 		}
 	} else {
-		logger.V(1).Info("No status changes needed for this reconciliation.", "application", app.Name)
+		logger.V(1).Info("No status changes required for this reconciliation cycle.", "application", app.Name)
+	}
+	
+	// Determine Requeue based on errors or deployment state
+	if deploymentErr != nil { return ctrl.Result{}, deploymentErr }
+	if serviceErr != nil { return ctrl.Result{}, serviceErr }
+	if ingressErr != nil { return ctrl.Result{}, ingressErr }
+
+	// Requeue if deployment is not yet fully available (replicas not met)
+	// or if the overall app is not ready (which might be due to progressing deployment)
+	appIsNowConsideredReady := isAppReady(currentStatus) // Re-check after all conditions are set
+
+	if !appIsNowConsideredReady {
+		requeueDelay := 15 * time.Second // Default requeue for not ready state
+		isStillProgressing := false
+		for _, cond := range currentStatus.Conditions {
+			if cond.Type == ConditionProgressing && cond.Status == metav1.ConditionFalse {
+				isStillProgressing = true
+				break
+			}
+		}
+		if (deployment != nil && deployment.Status.AvailableReplicas < *app.Spec.Replicas) || isStillProgressing {
+			logger.Info("Application not fully ready or deployment progressing, requeuing.", 
+				"desiredReplicas", *app.Spec.Replicas, 
+				"availableReplicas", currentStatus.AvailableReplicas, 
+				"isStillProgressing", isStillProgressing,
+				"requeueAfter", requeueDelay)
+		} else {
+            requeueDelay = 30 * time.Second // Slightly longer if not progressing but still not ready
+			logger.Info("Application not fully ready (check component statuses), requeuing.", "requeueAfter", requeueDelay)
+        }
+		return ctrl.Result{RequeueAfter: requeueDelay}, nil // Return nil error for controlled requeue
 	}
 
-	// Determine requeue based on primary errors or deployment state
-	if deploymentErr != nil {
-		return ctrl.Result{}, deploymentErr
-	}
-	if serviceErr != nil {
-		return ctrl.Result{}, serviceErr
-	}
-	if ingressErr != nil {
-		return ctrl.Result{}, ingressErr
-	}
-
-	if deployment != nil && deployment.Status.AvailableReplicas < *app.Spec.Replicas {
-		requeueDelay := 15 * time.Second
-		logger.Info("Deployment not fully available, requeuing.", "desired", *app.Spec.Replicas, "available", currentStatus.AvailableReplicas, "requeueAfter", requeueDelay)
-		return ctrl.Result{RequeueAfter: requeueDelay}, nil
-	}
-	if !appIsReady { // If app is not ready for other reasons (e.g. progressing but not yet available)
-		requeueDelay := 30 * time.Second // Slightly longer general "not ready" requeue
-		logger.Info("Application not fully ready (might be progressing or component issue), requeuing.", "requeueAfter", requeueDelay)
-		return ctrl.Result{RequeueAfter: requeueDelay}, nil
-	}
-
-	return finalResult, finalErr
+	return finalResult, finalErr // Should be ctrl.Result{}, nil if everything is fine
 }
 
 // applySpecDefaults modifies the in-memory app.Spec for processing.
@@ -401,31 +344,29 @@ func (r *ApplicationReconciler) applySpecDefaults(app *appsv1alpha1.Application)
 		changed = true
 	}
 
-	// Ensure ContainerPort is defaulted before using it as a default for Service.Port
-	containerPortVal := int32(80) // Default if app.Spec.ContainerPort was initially nil
+	containerPortVal := int32(80)
 	if app.Spec.ContainerPort != nil {
 		containerPortVal = *app.Spec.ContainerPort
 	}
 
 	if app.Spec.Service != nil {
 		if app.Spec.Service.Port == nil {
-			app.Spec.Service.Port = &containerPortVal // Use the (potentially defaulted) containerPortVal
+			app.Spec.Service.Port = &containerPortVal
 			changed = true
 		}
-		if app.Spec.Service.Type == nil { // Ensure this matches the CRD (ClusterIP only)
-			defaultServiceType := corev1.ServiceTypeClusterIP
-			app.Spec.Service.Type = &defaultServiceType
+		// Type is always ClusterIP for this controller version, ensure CRD validation/defaulting handles this.
+		// If spec.service.type field still exists and can be other values, you'd validate/default here.
+		// For now, assuming it's correctly managed to be ClusterIP by CRD or implicitly.
+		if app.Spec.Service.Type == nil { // If field exists and is nil
+			serviceTypeClusterIP := corev1.ServiceTypeClusterIP
+			app.Spec.Service.Type = &serviceTypeClusterIP
 			changed = true
+		} else if *app.Spec.Service.Type != corev1.ServiceTypeClusterIP { // If field exists and is not ClusterIP
+			log.Log.Info("Warning: Service.Type specified as non-ClusterIP, but controller only supports ClusterIP. Will default to ClusterIP.", "application", app.Name, "specifiedType", *app.Spec.Service.Type)
+			serviceTypeClusterIP := corev1.ServiceTypeClusterIP
+			app.Spec.Service.Type = &serviceTypeClusterIP // Override for internal processing
+			changed = true // Mark as changed for logging, though spec won't be patched by this function
 		}
-	} else { // If user wants a service implicitly by defining containerPort, but no service spec
-		// This is a design choice: Do we create a Service by default if Ingress is defined or just containerPort?
-		// For now, let's assume Service spec must be present to create a service.
-		// If you want to default a Service creation:
-		// app.Spec.Service = &appsv1alpha1.ApplicationServiceSpec{
-		// Port: &containerPortVal,
-		// Type: func() *corev1.ServiceType { t := corev1.ServiceTypeClusterIP; return &t }(),
-		// }
-		// changed = true
 	}
 
 	if app.Spec.Ingress != nil {
@@ -444,9 +385,13 @@ func (r *ApplicationReconciler) applySpecDefaults(app *appsv1alpha1.Application)
 	}
 }
 
+// reconcileDeployment creates or updates the Deployment.
 func (r *ApplicationReconciler) reconcileDeployment(ctx context.Context, app *appsv1alpha1.Application) (*appsv1.Deployment, error) {
 	logger := log.FromContext(ctx)
 	deploymentName := app.Name + "-deployment"
+
+	replicas := app.Spec.Replicas             // Assumes applySpecDefaults has run
+	containerPort := *app.Spec.ContainerPort // Assumes applySpecDefaults has run
 
 	desiredDeployment := &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
@@ -455,7 +400,7 @@ func (r *ApplicationReconciler) reconcileDeployment(ctx context.Context, app *ap
 			Labels:    r.getAppLabels(app, "deployment"),
 		},
 		Spec: appsv1.DeploymentSpec{
-			Replicas: app.Spec.Replicas,
+			Replicas: replicas,
 			Selector: &metav1.LabelSelector{
 				MatchLabels: r.getSelectorLabels(app),
 			},
@@ -469,7 +414,7 @@ func (r *ApplicationReconciler) reconcileDeployment(ctx context.Context, app *ap
 						Image: app.Spec.Image,
 						Ports: []corev1.ContainerPort{{
 							Name:          "http",
-							ContainerPort: *app.Spec.ContainerPort,
+							ContainerPort: containerPort,
 						}},
 						Env:            app.Spec.EnvVars,
 						Resources:      safeResourceRequirements(app.Spec.Resources),
@@ -485,10 +430,8 @@ func (r *ApplicationReconciler) reconcileDeployment(ctx context.Context, app *ap
 		return nil, fmt.Errorf("failed to set owner reference on Deployment: %w", err)
 	}
 
-	// Try to get the existing Deployment
 	foundDeployment := &appsv1.Deployment{}
 	err := r.Get(ctx, types.NamespacedName{Name: deploymentName, Namespace: app.Namespace}, foundDeployment)
-
 	if err != nil && apierrors.IsNotFound(err) {
 		logger.Info("Creating a new Deployment", "Deployment.Namespace", desiredDeployment.Namespace, "Deployment.Name", desiredDeployment.Name)
 		err = r.Create(ctx, desiredDeployment)
@@ -497,109 +440,97 @@ func (r *ApplicationReconciler) reconcileDeployment(ctx context.Context, app *ap
 			return nil, fmt.Errorf("failed to create Deployment: %w", err)
 		}
 		r.Recorder.Eventf(app, corev1.EventTypeNormal, ReasonDeploymentCreated, "Created Deployment %s/%s", desiredDeployment.Namespace, desiredDeployment.Name)
-		return desiredDeployment, nil // Return the newly created deployment
+		return desiredDeployment, nil
 	} else if err != nil {
 		return nil, fmt.Errorf("failed to get Deployment: %w", err)
 	}
 
-	// Deployment exists, reconcile it
-	// Use RetryOnConflict for the update operation
-	var updatedDeployment *appsv1.Deployment
+	// Deployment exists, reconcile it using RetryOnConflict for updates
+	var updatedDeployment *appsv1.Deployment // To capture the final state of the deployment after potential update
 	updateErr := retry.RetryOnConflict(retry.DefaultRetry, func() error {
-		// Fetch the latest version of foundDeployment within the retry loop
-		// This is crucial to ensure the update is based on the most recent version.
 		currentFoundDeployment := &appsv1.Deployment{}
 		getErr := r.Get(ctx, types.NamespacedName{Name: deploymentName, Namespace: app.Namespace}, currentFoundDeployment)
 		if getErr != nil {
-			// If NotFound here, it means it was deleted during retry, which is unusual but possible.
-			// Let the outer reconcile handle it or return the error.
 			return fmt.Errorf("failed to re-fetch Deployment during update retry: %w", getErr)
 		}
 
-		// Compare desired state with currentFoundDeployment and apply changes
 		needsUpdate := false
+		// Compare and apply changes from desiredDeployment.Spec to currentFoundDeployment.Spec
 		if !reflect.DeepEqual(currentFoundDeployment.Spec.Replicas, desiredDeployment.Spec.Replicas) {
-			needsUpdate = true
-			currentFoundDeployment.Spec.Replicas = desiredDeployment.Spec.Replicas
+			needsUpdate = true; currentFoundDeployment.Spec.Replicas = desiredDeployment.Spec.Replicas
 		}
-		// Assuming single container for simplicity in this comparison
-		if len(currentFoundDeployment.Spec.Template.Spec.Containers) != 1 ||
-			len(desiredDeployment.Spec.Template.Spec.Containers) != 1 { // Basic check
-			// Handle this case: maybe recreate or error out if container structure is unexpected
-			// For now, if container count differs, we might force update with desired spec
-			if len(desiredDeployment.Spec.Template.Spec.Containers) == 1 { // Only proceed if desired has one
-				needsUpdate = true
-				currentFoundDeployment.Spec.Template.Spec.Containers = desiredDeployment.Spec.Template.Spec.Containers
-			}
-		} else if currentFoundDeployment.Spec.Template.Spec.Containers[0].Image != desiredDeployment.Spec.Template.Spec.Containers[0].Image ||
-			!reflect.DeepEqual(currentFoundDeployment.Spec.Template.Spec.Containers[0].Ports, desiredDeployment.Spec.Template.Spec.Containers[0].Ports) ||
-			!reflect.DeepEqual(currentFoundDeployment.Spec.Template.Spec.Containers[0].Env, desiredDeployment.Spec.Template.Spec.Containers[0].Env) ||
-			!reflect.DeepEqual(currentFoundDeployment.Spec.Template.Spec.Containers[0].Resources, desiredDeployment.Spec.Template.Spec.Containers[0].Resources) ||
-			!reflect.DeepEqual(currentFoundDeployment.Spec.Template.Spec.Containers[0].LivenessProbe, desiredDeployment.Spec.Template.Spec.Containers[0].LivenessProbe) ||
-			!reflect.DeepEqual(currentFoundDeployment.Spec.Template.Spec.Containers[0].ReadinessProbe, desiredDeployment.Spec.Template.Spec.Containers[0].ReadinessProbe) {
+		// More robust PodTemplateSpec comparison/update
+		if !reflect.DeepEqual(currentFoundDeployment.Spec.Template.Spec, desiredDeployment.Spec.Template.Spec) {
 			needsUpdate = true
-			currentFoundDeployment.Spec.Template.Spec.Containers = desiredDeployment.Spec.Template.Spec.Containers
+			currentFoundDeployment.Spec.Template.Spec = desiredDeployment.Spec.Template.Spec
+		}
+		// Ensure labels on PodTemplate are also synced
+		if !reflect.DeepEqual(currentFoundDeployment.Spec.Template.ObjectMeta.Labels, desiredDeployment.Spec.Template.ObjectMeta.Labels) {
+			needsUpdate = true
+			currentFoundDeployment.Spec.Template.ObjectMeta.Labels = desiredDeployment.Spec.Template.ObjectMeta.Labels
 		}
 
+
+		// Compare top-level labels and annotations of the Deployment itself
 		if !reflect.DeepEqual(currentFoundDeployment.Labels, desiredDeployment.Labels) {
-			needsUpdate = true
-			currentFoundDeployment.Labels = desiredDeployment.Labels
+			needsUpdate = true; currentFoundDeployment.Labels = desiredDeployment.Labels
 		}
-		// For annotations, be careful about overwriting system-added ones.
-		// Merge strategy might be better if you only control a subset of annotations.
-		if !reflect.DeepEqual(currentFoundDeployment.Annotations, desiredDeployment.Annotations) {
-			needsUpdate = true
-			currentFoundDeployment.Annotations = desiredDeployment.Annotations
+		// Smart annotation update: only manage annotations defined in desired, preserve others
+		if currentFoundDeployment.Annotations == nil { currentFoundDeployment.Annotations = make(map[string]string) }
+		for k, v := range desiredDeployment.Annotations {
+			if currentFoundDeployment.Annotations[k] != v {
+				currentFoundDeployment.Annotations[k] = v
+				needsUpdate = true
+			}
 		}
+
 
 		if !needsUpdate {
-			logger.V(1).Info("Deployment is already in desired state, no update needed within retry loop.", "Deployment.Name", deploymentName)
-			updatedDeployment = currentFoundDeployment // It's current and up-to-date
-			return nil                                 // No update attempt needed
+			logger.V(1).Info("Deployment is already in desired state within retry loop.", "Deployment.Name", deploymentName)
+			updatedDeployment = currentFoundDeployment
+			return nil
 		}
 
 		logger.Info("Attempting to update existing Deployment", "Deployment.Name", deploymentName)
-		// The Update call uses currentFoundDeployment which has the latest ResourceVersion
 		updateOpErr := r.Update(ctx, currentFoundDeployment)
 		if updateOpErr == nil {
-			updatedDeployment = currentFoundDeployment // Store the successfully updated object
+			updatedDeployment = currentFoundDeployment
 		}
-		return updateOpErr // This error will be checked by RetryOnConflict
+		return updateOpErr
 	})
 
 	if updateErr != nil {
 		r.Recorder.Eventf(app, corev1.EventTypeWarning, ReasonDeploymentFailed, "Failed to update Deployment %s after retries: %v", deploymentName, updateErr)
-		return nil, fmt.Errorf("failed to update Deployment after retries: %w", updateErr)
+		return nil, fmt.Errorf("failed to update Deployment '%s' after retries: %w", deploymentName, updateErr)
+	}
+	
+	if updatedDeployment == nil { // This means no update was needed and foundDeployment is the current state
+	    updatedDeployment = foundDeployment
 	}
 
-	if updatedDeployment == nil && !apierrors.IsNotFound(err) { // If updateErr was nil but updatedDeployment wasn't set (e.g., needsUpdate was false)
-		updatedDeployment = foundDeployment // Use the initially found one if no update occurred.
+	// Check if an update was *attempted and successful* vs. *no update needed*
+	// foundDeployment is the state before the retry loop. updatedDeployment is the state after.
+	if !reflect.DeepEqual(foundDeployment.Spec, updatedDeployment.Spec) ||
+	   !reflect.DeepEqual(foundDeployment.Labels, updatedDeployment.Labels) ||
+	   !reflect.DeepEqual(foundDeployment.Annotations, updatedDeployment.Annotations) {
+		r.Recorder.Eventf(app, corev1.EventTypeNormal, ReasonDeploymentUpdated, "Updated Deployment %s/%s", updatedDeployment.Namespace, updatedDeployment.Name)
+	} else if updateErr == nil { // No error from retry, and no spec/label/annotation change implies it was already up-to-date
+		logger.V(1).Info("Deployment confirmed up-to-date", "Deployment.Namespace", updatedDeployment.Namespace, "Deployment.Name", updatedDeployment.Name)
 	}
-
-	if updateErr == nil { // Only record event if update was successful or no update was needed
-		// Check if an update actually happened to differentiate event reason
-		if !reflect.DeepEqual(foundDeployment.Spec, updatedDeployment.Spec) ||
-			!reflect.DeepEqual(foundDeployment.Labels, updatedDeployment.Labels) ||
-			!reflect.DeepEqual(foundDeployment.Annotations, updatedDeployment.Annotations) {
-			r.Recorder.Eventf(app, corev1.EventTypeNormal, ReasonDeploymentUpdated, "Updated Deployment %s/%s", updatedDeployment.Namespace, updatedDeployment.Name)
-		} else {
-			logger.V(1).Info("Deployment is up-to-date", "Deployment.Namespace", updatedDeployment.Namespace, "Deployment.Name", updatedDeployment.Name)
-		}
-	}
-
+	
 	return updatedDeployment, nil
 }
 
+// reconcileService ensures the Service for the Application is correctly configured.
 func (r *ApplicationReconciler) reconcileService(ctx context.Context, app *appsv1alpha1.Application) (*corev1.Service, error) {
 	logger := log.FromContext(ctx)
 	serviceName := app.Name + "-service"
 
-	servicePort := *app.Spec.ContainerPort // Defaulted
+	servicePort := *app.Spec.ContainerPort // Defaulted by applySpecDefaults
 	if app.Spec.Service != nil && app.Spec.Service.Port != nil {
 		servicePort = *app.Spec.Service.Port
 	}
-	// ServiceType is now always ClusterIP as per earlier discussion
-	// If Spec.Service.Type still exists in CRD, it should be defaulted/validated to ClusterIP
+	// ServiceType is always ClusterIP per earlier decision and CRD validation/defaulting.
 
 	desiredService := &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{
@@ -622,10 +553,10 @@ func (r *ApplicationReconciler) reconcileService(ctx context.Context, app *appsv
 	err := r.Get(ctx, types.NamespacedName{Name: serviceName, Namespace: app.Namespace}, foundService)
 	if err != nil && apierrors.IsNotFound(err) {
 		logger.Info("Creating a new Service", "Service.Namespace", desiredService.Namespace, "Service.Name", desiredService.Name)
-		err = r.Create(ctx, desiredService)
-		if err != nil {
-			r.Recorder.Eventf(app, corev1.EventTypeWarning, ReasonServiceError, "Failed to create Service %s: %v", desiredService.Name, err)
-			return nil, fmt.Errorf("failed to create Service: %w", err)
+		errCreate := r.Create(ctx, desiredService)
+		if errCreate != nil {
+			r.Recorder.Eventf(app, corev1.EventTypeWarning, ReasonServiceError, "Failed to create Service %s: %v", desiredService.Name, errCreate)
+			return nil, fmt.Errorf("failed to create Service: %w", errCreate)
 		}
 		r.Recorder.Eventf(app, corev1.EventTypeNormal, ReasonServiceCreated, "Created Service %s/%s", desiredService.Namespace, desiredService.Name)
 		return desiredService, nil
@@ -633,56 +564,77 @@ func (r *ApplicationReconciler) reconcileService(ctx context.Context, app *appsv
 		return nil, fmt.Errorf("failed to get Service: %w", err)
 	}
 
-	needsUpdate := false
-	if foundService.Spec.Type != corev1.ServiceTypeClusterIP { // Ensure it's ClusterIP
-		foundService.Spec.Type = corev1.ServiceTypeClusterIP
-		needsUpdate = true
-	}
-	if len(foundService.Spec.Ports) != 1 ||
-		foundService.Spec.Ports[0].Port != servicePort ||
-		foundService.Spec.Ports[0].TargetPort.IntVal != *app.Spec.ContainerPort ||
-		foundService.Spec.Ports[0].Name != "http" { // Assuming port name is "http"
-		foundService.Spec.Ports = desiredService.Spec.Ports
-		needsUpdate = true
-	}
-	if !reflect.DeepEqual(foundService.Spec.Selector, desiredService.Spec.Selector) {
-		foundService.Spec.Selector = desiredService.Spec.Selector
-		needsUpdate = true
-	}
-	if !reflect.DeepEqual(foundService.Labels, desiredService.Labels) {
-		foundService.Labels = desiredService.Labels
-		needsUpdate = true
-	}
-
-	if needsUpdate {
-		logger.Info("Updating existing Service", "Service.Namespace", foundService.Namespace, "Service.Name", foundService.Name)
-		// Preserve ClusterIP if already allocated and type is ClusterIP
-		existingClusterIP := foundService.Spec.ClusterIP
-		foundService.Spec.Type = corev1.ServiceTypeClusterIP // Explicitly set type
-		if foundService.Spec.Type == corev1.ServiceTypeClusterIP {
-			foundService.Spec.ClusterIP = existingClusterIP // Preserve
+	// Service Exists, reconcile it
+	var updatedService *corev1.Service
+	updateErr := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		currentFoundService := &corev1.Service{}
+		getErr := r.Get(ctx, types.NamespacedName{Name: serviceName, Namespace: app.Namespace}, currentFoundService)
+		if getErr != nil {
+			return fmt.Errorf("failed to re-fetch Service '%s' during update retry: %w", serviceName, getErr)
 		}
 
-		err = r.Update(ctx, foundService)
-		if err != nil {
-			r.Recorder.Eventf(app, corev1.EventTypeWarning, ReasonServiceError, "Failed to update Service %s: %v", foundService.Name, err)
-			return nil, fmt.Errorf("failed to update Service: %w", err)
+		needsActualUpdate := false
+		if currentFoundService.Spec.Type != corev1.ServiceTypeClusterIP {
+			currentFoundService.Spec.Type = corev1.ServiceTypeClusterIP; needsActualUpdate = true
 		}
-		r.Recorder.Eventf(app, corev1.EventTypeNormal, ReasonServiceUpdated, "Updated Service %s/%s", foundService.Namespace, foundService.Name)
-		return foundService, nil
+		// Compare ports, selector, labels
+		if !reflect.DeepEqual(currentFoundService.Spec.Ports, desiredService.Spec.Ports) {
+			currentFoundService.Spec.Ports = desiredService.Spec.Ports; needsActualUpdate = true
+		}
+		if !reflect.DeepEqual(currentFoundService.Spec.Selector, desiredService.Spec.Selector) {
+			currentFoundService.Spec.Selector = desiredService.Spec.Selector; needsActualUpdate = true
+		}
+		if !reflect.DeepEqual(currentFoundService.Labels, desiredService.Labels) {
+			currentFoundService.Labels = desiredService.Labels; needsActualUpdate = true
+		}
+		// Annotations are not typically managed for basic ClusterIP service by this controller.
+
+		if !needsActualUpdate {
+			logger.V(1).Info("Service is already in desired state within retry loop.", "Service.Name", serviceName)
+			updatedService = currentFoundService
+			return nil
+		}
+		
+		// Preserve ClusterIP if already allocated
+		existingClusterIP := currentFoundService.Spec.ClusterIP
+		currentFoundService.Spec.Type = corev1.ServiceTypeClusterIP // Ensure type
+		if currentFoundService.Spec.Type == corev1.ServiceTypeClusterIP {
+			currentFoundService.Spec.ClusterIP = existingClusterIP // Preserve
+		}
+
+
+		logger.Info("Attempting to update existing Service", "Service.Name", serviceName)
+		updateOpErr := r.Update(ctx, currentFoundService)
+		if updateOpErr == nil {
+			updatedService = currentFoundService
+		}
+		return updateOpErr
+	})
+
+	if updateErr != nil {
+		r.Recorder.Eventf(app, corev1.EventTypeWarning, ReasonServiceError, "Failed to update Service %s after retries: %v", serviceName, updateErr)
+		return nil, fmt.Errorf("failed to update Service '%s' after retries: %w", serviceName, updateErr)
 	}
 
-	logger.V(1).Info("Service is up-to-date", "Service.Namespace", foundService.Namespace, "Service.Name", foundService.Name)
-	return foundService, nil
+	if updatedService == nil { updatedService = foundService } // If no update was performed in retry loop
+
+	if !reflect.DeepEqual(foundService.Spec, updatedService.Spec) || !reflect.DeepEqual(foundService.Labels, updatedService.Labels) {
+		r.Recorder.Eventf(app, corev1.EventTypeNormal, ReasonServiceUpdated, "Updated Service %s/%s", updatedService.Namespace, updatedService.Name)
+	} else if updateErr == nil {
+		logger.V(1).Info("Service confirmed up-to-date", "Service.Namespace", updatedService.Namespace, "Service.Name", updatedService.Name)
+	}
+	
+	return updatedService, nil
 }
 
+
+// reconcileIngress ensures the Ingress for the Application is correctly configured.
 func (r *ApplicationReconciler) reconcileIngress(ctx context.Context, app *appsv1alpha1.Application, serviceName string) (*networkingv1.Ingress, error) {
 	logger := log.FromContext(ctx)
 	ingressName := app.Name + "-ingress"
-	ingressSpec := app.Spec.Ingress // Assumes applySpecDefaults has run
+	ingressSpec := app.Spec.Ingress // Assumes applySpecDefaults has run and ingressSpec is not nil
 
-	// Default service port to use for Ingress backend (must be the Service's exposed port)
-	backendServicePort := *app.Spec.ContainerPort // Default to container port
+	backendServicePort := *app.Spec.ContainerPort
 	if app.Spec.Service != nil && app.Spec.Service.Port != nil {
 		backendServicePort = *app.Spec.Service.Port
 	}
@@ -690,23 +642,19 @@ func (r *ApplicationReconciler) reconcileIngress(ctx context.Context, app *appsv
 	desiredIngress := &networkingv1.Ingress{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: ingressName, Namespace: app.Namespace,
-			Labels:      r.getAppLabels(app, "ingress"),
-			Annotations: ingressSpec.Annotations, // from defaulted spec
+			Labels: r.getAppLabels(app, "ingress"), Annotations: ingressSpec.Annotations,
 		},
 		Spec: networkingv1.IngressSpec{
-			IngressClassName: ingressSpec.IngressClassName, // from defaulted spec
-			TLS:              ingressSpec.TLS,              // from spec
+			IngressClassName: ingressSpec.IngressClassName, TLS: ingressSpec.TLS,
 			Rules: []networkingv1.IngressRule{{
 				Host: ingressSpec.Host,
 				IngressRuleValue: networkingv1.IngressRuleValue{
 					HTTP: &networkingv1.HTTPIngressRuleValue{
 						Paths: []networkingv1.HTTPIngressPath{{
-							Path:     ingressSpec.Path,     // from defaulted spec
-							PathType: ingressSpec.PathType, // from defaulted spec
+							Path: ingressSpec.Path, PathType: ingressSpec.PathType,
 							Backend: networkingv1.IngressBackend{
 								Service: &networkingv1.IngressServiceBackend{
-									Name: serviceName, // Name of the K8s Service
-									Port: networkingv1.ServiceBackendPort{Number: backendServicePort},
+									Name: serviceName, Port: networkingv1.ServiceBackendPort{Number: backendServicePort},
 								},
 							},
 						}},
@@ -723,10 +671,10 @@ func (r *ApplicationReconciler) reconcileIngress(ctx context.Context, app *appsv
 	err := r.Get(ctx, types.NamespacedName{Name: ingressName, Namespace: app.Namespace}, foundIngress)
 	if err != nil && apierrors.IsNotFound(err) {
 		logger.Info("Creating a new Ingress", "Ingress.Namespace", desiredIngress.Namespace, "Ingress.Name", desiredIngress.Name)
-		err = r.Create(ctx, desiredIngress)
-		if err != nil {
-			r.Recorder.Eventf(app, corev1.EventTypeWarning, ReasonIngressError, "Failed to create Ingress %s: %v", desiredIngress.Name, err)
-			return nil, fmt.Errorf("failed to create Ingress: %w", err)
+		errCreate := r.Create(ctx, desiredIngress)
+		if errCreate != nil {
+			r.Recorder.Eventf(app, corev1.EventTypeWarning, ReasonIngressError, "Failed to create Ingress %s: %v", desiredIngress.Name, errCreate)
+			return nil, fmt.Errorf("failed to create Ingress: %w", errCreate)
 		}
 		r.Recorder.Eventf(app, corev1.EventTypeNormal, ReasonIngressCreated, "Created Ingress %s/%s", desiredIngress.Namespace, desiredIngress.Name)
 		return desiredIngress, nil
@@ -734,63 +682,72 @@ func (r *ApplicationReconciler) reconcileIngress(ctx context.Context, app *appsv
 		return nil, fmt.Errorf("failed to get Ingress: %w", err)
 	}
 
-	// Compare and update if necessary. Using reflect.DeepEqual for spec can be brittle due to defaultings by K8s.
-	// A more robust way is controllerutil.CreateOrPatch or manually comparing fields you control.
-	needsUpdate := false
-	if !reflect.DeepEqual(foundIngress.Spec.Rules, desiredIngress.Spec.Rules) {
-		needsUpdate = true
-	}
-	if !reflect.DeepEqual(foundIngress.Spec.TLS, desiredIngress.Spec.TLS) {
-		needsUpdate = true
-	}
-	if !reflect.DeepEqual(foundIngress.Spec.IngressClassName, desiredIngress.Spec.IngressClassName) {
-		needsUpdate = true
-	}
-	if !reflect.DeepEqual(foundIngress.Annotations, desiredIngress.Annotations) {
-		needsUpdate = true
-	} // User-managed annotations
-	if !reflect.DeepEqual(foundIngress.Labels, desiredIngress.Labels) {
-		needsUpdate = true
-	} // User-managed labels
-
-	if needsUpdate {
-		logger.Info("Updating existing Ingress", "Ingress.Namespace", foundIngress.Namespace, "Ingress.Name", foundIngress.Name)
-		// Preserve immutable or server-set fields if necessary, or fields not managed by this controller.
-		// For many Ingress fields, replacing the Spec is common if this controller owns all aspects.
-		foundIngress.Spec = desiredIngress.Spec
-		foundIngress.Labels = desiredIngress.Labels
-		foundIngress.Annotations = desiredIngress.Annotations // This will overwrite any other annotations.
-		// If you need to merge, more complex logic is needed.
-
-		err = r.Update(ctx, foundIngress)
-		if err != nil {
-			r.Recorder.Eventf(app, corev1.EventTypeWarning, ReasonIngressError, "Failed to update Ingress %s: %v", foundIngress.Name, err)
-			return nil, fmt.Errorf("failed to update Ingress: %w", err)
+	// Ingress exists, reconcile it
+	var updatedIngress *networkingv1.Ingress
+	updateErr := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		currentFoundIngress := &networkingv1.Ingress{}
+		getErr := r.Get(ctx, types.NamespacedName{Name: ingressName, Namespace: app.Namespace}, currentFoundIngress)
+		if getErr != nil {
+			return fmt.Errorf("failed to re-fetch Ingress '%s' during update retry: %w", ingressName, getErr)
 		}
-		r.Recorder.Eventf(app, corev1.EventTypeNormal, ReasonIngressUpdated, "Updated Ingress %s/%s", foundIngress.Namespace, foundIngress.Name)
-		return foundIngress, nil
+
+		needsActualUpdate := false
+		if !reflect.DeepEqual(currentFoundIngress.Spec, desiredIngress.Spec) {
+			currentFoundIngress.Spec = desiredIngress.Spec; needsActualUpdate = true
+		}
+		if !reflect.DeepEqual(currentFoundIngress.Labels, desiredIngress.Labels) {
+			currentFoundIngress.Labels = desiredIngress.Labels; needsActualUpdate = true
+		}
+		if !reflect.DeepEqual(currentFoundIngress.Annotations, desiredIngress.Annotations) {
+			currentFoundIngress.Annotations = desiredIngress.Annotations; needsActualUpdate = true
+		}
+
+		if !needsActualUpdate {
+			logger.V(1).Info("Ingress is already in desired state within retry loop.", "Ingress.Name", ingressName)
+			updatedIngress = currentFoundIngress
+			return nil
+		}
+
+		logger.Info("Attempting to update existing Ingress", "Ingress.Name", ingressName)
+		updateOpErr := r.Update(ctx, currentFoundIngress)
+		if updateOpErr == nil {
+			updatedIngress = currentFoundIngress
+		}
+		return updateOpErr
+	})
+	
+	if updateErr != nil {
+		r.Recorder.Eventf(app, corev1.EventTypeWarning, ReasonIngressError, "Failed to update Ingress %s after retries: %v", ingressName, updateErr)
+		return nil, fmt.Errorf("failed to update Ingress '%s' after retries: %w", ingressName, updateErr)
+	}
+	if updatedIngress == nil { updatedIngress = foundIngress }
+
+	if !reflect.DeepEqual(foundIngress.Spec, updatedIngress.Spec) || 
+	   !reflect.DeepEqual(foundIngress.Labels, updatedIngress.Labels) ||
+	   !reflect.DeepEqual(foundIngress.Annotations, updatedIngress.Annotations) {
+		r.Recorder.Eventf(app, corev1.EventTypeNormal, ReasonIngressUpdated, "Updated Ingress %s/%s", updatedIngress.Namespace, updatedIngress.Name)
+	} else if updateErr == nil {
+		logger.V(1).Info("Ingress confirmed up-to-date", "Ingress.Namespace", updatedIngress.Namespace, "Ingress.Name", updatedIngress.Name)
 	}
 
-	logger.V(1).Info("Ingress is up-to-date", "Ingress.Namespace", foundIngress.Namespace, "Ingress.Name", foundIngress.Name)
-	return foundIngress, nil
+	return updatedIngress, nil
 }
 
 func (r *ApplicationReconciler) ensureIngressDeleted(ctx context.Context, app *appsv1alpha1.Application) error {
 	logger := log.FromContext(ctx)
 	ingressName := app.Name + "-ingress"
-
+	
 	ingressToDelete := &networkingv1.Ingress{
-		ObjectMeta: metav1.ObjectMeta{Name: ingressName, Namespace: app.Namespace},
+		ObjectMeta: metav1.ObjectMeta{ Name: ingressName, Namespace: app.Namespace },
 	}
-
+	
 	err := r.Delete(ctx, ingressToDelete, client.PropagationPolicy(metav1.DeletePropagationForeground))
-	// client.IgnoreNotFound will make Delete return nil if the object is already gone.
-	if err != nil && !apierrors.IsNotFound(err) {
+	if err != nil && !apierrors.IsNotFound(err) { 
 		r.Recorder.Eventf(app, corev1.EventTypeWarning, ReasonIngressError, "Failed to delete Ingress %s: %v", ingressName, err)
 		return fmt.Errorf("failed to delete Ingress %s: %w", ingressName, err)
 	}
-	if err == nil || apierrors.IsNotFound(err) {
-		if !apierrors.IsNotFound(err) { // Only record event if it was actually found and deleted now
+	if err == nil || apierrors.IsNotFound(err) { 
+		if !apierrors.IsNotFound(err) { 
 			logger.Info("Ingress deleted successfully or was already gone", "IngressName", ingressName)
 			r.Recorder.Eventf(app, corev1.EventTypeNormal, ReasonIngressDeleted, "Ingress %s/%s deleted as spec.ingress is nil", app.Namespace, ingressName)
 		} else {
@@ -802,11 +759,11 @@ func (r *ApplicationReconciler) ensureIngressDeleted(ctx context.Context, app *a
 
 func (r *ApplicationReconciler) getAppLabels(app *appsv1alpha1.Application, componentName string) map[string]string {
 	labels := make(map[string]string)
-	for k, v := range app.Labels {
+	for k, v := range app.Labels { 
 		labels[k] = v
 	}
 	labels["app.kubernetes.io/name"] = app.Name
-	labels["app.kubernetes.io/instance"] = app.Name
+	labels["app.kubernetes.io/instance"] = app.Name 
 	labels["app.kubernetes.io/managed-by"] = "application-lifecycle-manager"
 	labels["app.kubernetes.io/component"] = componentName
 	return labels
@@ -815,7 +772,7 @@ func (r *ApplicationReconciler) getAppLabels(app *appsv1alpha1.Application, comp
 func (r *ApplicationReconciler) getSelectorLabels(app *appsv1alpha1.Application) map[string]string {
 	return map[string]string{
 		"app.kubernetes.io/name":     app.Name,
-		"app.kubernetes.io/instance": app.Name, // Using app.Name for instance specific selection
+		"app.kubernetes.io/instance": app.Name, 
 	}
 }
 
@@ -832,16 +789,14 @@ func setApplicationCondition(status *appsv1alpha1.ApplicationStatus, conditionTy
 		Type: conditionType, Status: conditionStatus, Reason: reason, Message: message,
 		LastTransitionTime: now, ObservedGeneration: observedGeneration,
 	}
-	if status.Conditions == nil {
-		status.Conditions = []metav1.Condition{}
-	}
+	if status.Conditions == nil { status.Conditions = []metav1.Condition{} }
 	for i, c := range status.Conditions {
 		if c.Type == conditionType {
 			if c.Status == newCondition.Status && c.Reason == newCondition.Reason && c.Message == newCondition.Message && c.ObservedGeneration == newCondition.ObservedGeneration {
-				return false
+				return false 
 			}
 			status.Conditions[i] = newCondition
-			return true
+			return true 
 		}
 	}
 	status.Conditions = append(status.Conditions, newCondition)
@@ -855,7 +810,6 @@ func updateConditionsFromDeployment(deployment *appsv1.Deployment, status *appsv
 		desiredReplicas = *deployment.Spec.Replicas
 	}
 
-	// Available Condition
 	newAvailableStatus := metav1.ConditionFalse
 	newAvailableReason := ReasonComponentsNotReady
 	newAvailableMessage := fmt.Sprintf("Deployment has %d/%d available replicas.", deployment.Status.AvailableReplicas, desiredReplicas)
@@ -867,8 +821,6 @@ func updateConditionsFromDeployment(deployment *appsv1.Deployment, status *appsv
 		changed = true
 	}
 
-	// Progressing Condition
-	// Check DeploymentProgressing condition from the deployment itself
 	var depProgressingCond *appsv1.DeploymentCondition
 	for i := range deployment.Status.Conditions {
 		if deployment.Status.Conditions[i].Type == appsv1.DeploymentProgressing {
@@ -876,11 +828,9 @@ func updateConditionsFromDeployment(deployment *appsv1.Deployment, status *appsv
 			break
 		}
 	}
-
 	newProgressingStatus := metav1.ConditionFalse
 	newProgressingReason := ReasonDeploymentProgressing
 	newProgressingMessage := "Deployment is progressing."
-
 	if depProgressingCond != nil {
 		if depProgressingCond.Status == corev1.ConditionTrue && depProgressingCond.Reason == "NewReplicaSetAvailable" {
 			newProgressingStatus = metav1.ConditionTrue
@@ -889,17 +839,15 @@ func updateConditionsFromDeployment(deployment *appsv1.Deployment, status *appsv
 			newProgressingMessage = fmt.Sprintf("Deployment progressing: %s", depProgressingCond.Message)
 		}
 	} else {
-		// If no Progressing condition from deployment, infer based on replica counts
 		if deployment.Status.UpdatedReplicas < desiredReplicas || deployment.Status.Replicas > deployment.Status.UpdatedReplicas {
 			newProgressingMessage = fmt.Sprintf("Deployment rollout in progress: updated %d/%d, total %d", deployment.Status.UpdatedReplicas, desiredReplicas, deployment.Status.Replicas)
 		} else if deployment.Status.AvailableReplicas < desiredReplicas {
 			newProgressingMessage = fmt.Sprintf("Deployment rollout appears complete but waiting for %d available replicas (currently %d).", desiredReplicas, deployment.Status.AvailableReplicas)
-		} else { // Updated and Available counts match desired
+		} else { 
 			newProgressingStatus = metav1.ConditionTrue
 			newProgressingMessage = "Deployment rollout appears complete and all replicas available."
 		}
 	}
-
 	if setApplicationCondition(status, ConditionProgressing, newProgressingStatus, newProgressingReason, newProgressingMessage, observedGen) {
 		changed = true
 	}
@@ -908,9 +856,8 @@ func updateConditionsFromDeployment(deployment *appsv1.Deployment, status *appsv
 
 func isAppReady(status *appsv1alpha1.ApplicationStatus) bool {
 	isAvailable := false
-	isProgressingStable := false
+	isProgressingStable := false 
 	isDegraded := false
-
 	for _, cond := range status.Conditions {
 		if cond.Type == ConditionAvailable && cond.Status == metav1.ConditionTrue {
 			isAvailable = true
