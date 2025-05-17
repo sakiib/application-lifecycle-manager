@@ -25,7 +25,7 @@ spec:
       name: IngressURL
       type: string
     - jsonPath: .status.conditions[?(@.type=="Ready")].status
-      name: AppStatus
+      name: AppReady
       type: string
     - jsonPath: .metadata.creationTimestamp
       name: Age

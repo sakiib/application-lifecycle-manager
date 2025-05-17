@@ -444,14 +444,9 @@ func (r *ApplicationReconciler) applySpecDefaults(app *appsv1alpha1.Application)
 	}
 }
 
-// reconcileDeployment creates or updates the Deployment.
 func (r *ApplicationReconciler) reconcileDeployment(ctx context.Context, app *appsv1alpha1.Application) (*appsv1.Deployment, error) {
 	logger := log.FromContext(ctx)
 	deploymentName := app.Name + "-deployment"
-
-	// Ensure defaults are applied to app.Spec before using them here
-	replicas := app.Spec.Replicas            // Should be non-nil after applySpecDefaults
-	containerPort := *app.Spec.ContainerPort // Should be non-nil
 
 	desiredDeployment := &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
@@ -460,7 +455,7 @@ func (r *ApplicationReconciler) reconcileDeployment(ctx context.Context, app *ap
 			Labels:    r.getAppLabels(app, "deployment"),
 		},
 		Spec: appsv1.DeploymentSpec{
-			Replicas: replicas,
+			Replicas: app.Spec.Replicas,
 			Selector: &metav1.LabelSelector{
 				MatchLabels: r.getSelectorLabels(app),
 			},
@@ -473,8 +468,8 @@ func (r *ApplicationReconciler) reconcileDeployment(ctx context.Context, app *ap
 						Name:  app.Name,
 						Image: app.Spec.Image,
 						Ports: []corev1.ContainerPort{{
-							Name:          "http", // Give port a name
-							ContainerPort: containerPort,
+							Name:          "http",
+							ContainerPort: *app.Spec.ContainerPort,
 						}},
 						Env:            app.Spec.EnvVars,
 						Resources:      safeResourceRequirements(app.Spec.Resources),
@@ -490,8 +485,10 @@ func (r *ApplicationReconciler) reconcileDeployment(ctx context.Context, app *ap
 		return nil, fmt.Errorf("failed to set owner reference on Deployment: %w", err)
 	}
 
+	// Try to get the existing Deployment
 	foundDeployment := &appsv1.Deployment{}
 	err := r.Get(ctx, types.NamespacedName{Name: deploymentName, Namespace: app.Namespace}, foundDeployment)
+
 	if err != nil && apierrors.IsNotFound(err) {
 		logger.Info("Creating a new Deployment", "Deployment.Namespace", desiredDeployment.Namespace, "Deployment.Name", desiredDeployment.Name)
 		err = r.Create(ctx, desiredDeployment)
@@ -500,51 +497,97 @@ func (r *ApplicationReconciler) reconcileDeployment(ctx context.Context, app *ap
 			return nil, fmt.Errorf("failed to create Deployment: %w", err)
 		}
 		r.Recorder.Eventf(app, corev1.EventTypeNormal, ReasonDeploymentCreated, "Created Deployment %s/%s", desiredDeployment.Namespace, desiredDeployment.Name)
-		return desiredDeployment, nil
+		return desiredDeployment, nil // Return the newly created deployment
 	} else if err != nil {
 		return nil, fmt.Errorf("failed to get Deployment: %w", err)
 	}
 
-	// Check for updates more comprehensively
-	needsUpdate := false
-	if !reflect.DeepEqual(foundDeployment.Spec.Replicas, desiredDeployment.Spec.Replicas) {
-		needsUpdate = true
-		foundDeployment.Spec.Replicas = desiredDeployment.Spec.Replicas
-	}
-	if len(foundDeployment.Spec.Template.Spec.Containers) != 1 || // Assuming single container
-		foundDeployment.Spec.Template.Spec.Containers[0].Image != desiredDeployment.Spec.Template.Spec.Containers[0].Image ||
-		!reflect.DeepEqual(foundDeployment.Spec.Template.Spec.Containers[0].Ports, desiredDeployment.Spec.Template.Spec.Containers[0].Ports) ||
-		!reflect.DeepEqual(foundDeployment.Spec.Template.Spec.Containers[0].Env, desiredDeployment.Spec.Template.Spec.Containers[0].Env) ||
-		!reflect.DeepEqual(foundDeployment.Spec.Template.Spec.Containers[0].Resources, desiredDeployment.Spec.Template.Spec.Containers[0].Resources) ||
-		!reflect.DeepEqual(foundDeployment.Spec.Template.Spec.Containers[0].LivenessProbe, desiredDeployment.Spec.Template.Spec.Containers[0].LivenessProbe) ||
-		!reflect.DeepEqual(foundDeployment.Spec.Template.Spec.Containers[0].ReadinessProbe, desiredDeployment.Spec.Template.Spec.Containers[0].ReadinessProbe) {
-		needsUpdate = true
-		// Update all relevant fields from desiredDeployment's PodTemplateSpec to foundDeployment
-		foundDeployment.Spec.Template.Spec.Containers = desiredDeployment.Spec.Template.Spec.Containers
-	}
-	if !reflect.DeepEqual(foundDeployment.Labels, desiredDeployment.Labels) {
-		needsUpdate = true
-		foundDeployment.Labels = desiredDeployment.Labels
-	}
-	// Be careful with Annotations, as K8s or other controllers might add their own.
-	// Only manage annotations you define or expect to control.
-	// if !reflect.DeepEqual(foundDeployment.Annotations, desiredDeployment.Annotations) {
-	// 	needsUpdate = true; foundDeployment.Annotations = desiredDeployment.Annotations
-	// }
-
-	if needsUpdate {
-		logger.Info("Updating existing Deployment", "Deployment.Namespace", foundDeployment.Namespace, "Deployment.Name", foundDeployment.Name)
-		err = r.Update(ctx, foundDeployment)
-		if err != nil {
-			r.Recorder.Eventf(app, corev1.EventTypeWarning, ReasonDeploymentFailed, "Failed to update Deployment %s: %v", foundDeployment.Name, err)
-			return nil, fmt.Errorf("failed to update Deployment: %w", err)
+	// Deployment exists, reconcile it
+	// Use RetryOnConflict for the update operation
+	var updatedDeployment *appsv1.Deployment
+	updateErr := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		// Fetch the latest version of foundDeployment within the retry loop
+		// This is crucial to ensure the update is based on the most recent version.
+		currentFoundDeployment := &appsv1.Deployment{}
+		getErr := r.Get(ctx, types.NamespacedName{Name: deploymentName, Namespace: app.Namespace}, currentFoundDeployment)
+		if getErr != nil {
+			// If NotFound here, it means it was deleted during retry, which is unusual but possible.
+			// Let the outer reconcile handle it or return the error.
+			return fmt.Errorf("failed to re-fetch Deployment during update retry: %w", getErr)
 		}
-		r.Recorder.Eventf(app, corev1.EventTypeNormal, ReasonDeploymentUpdated, "Updated Deployment %s/%s", foundDeployment.Namespace, foundDeployment.Name)
-		return foundDeployment, nil
+
+		// Compare desired state with currentFoundDeployment and apply changes
+		needsUpdate := false
+		if !reflect.DeepEqual(currentFoundDeployment.Spec.Replicas, desiredDeployment.Spec.Replicas) {
+			needsUpdate = true
+			currentFoundDeployment.Spec.Replicas = desiredDeployment.Spec.Replicas
+		}
+		// Assuming single container for simplicity in this comparison
+		if len(currentFoundDeployment.Spec.Template.Spec.Containers) != 1 ||
+			len(desiredDeployment.Spec.Template.Spec.Containers) != 1 { // Basic check
+			// Handle this case: maybe recreate or error out if container structure is unexpected
+			// For now, if container count differs, we might force update with desired spec
+			if len(desiredDeployment.Spec.Template.Spec.Containers) == 1 { // Only proceed if desired has one
+				needsUpdate = true
+				currentFoundDeployment.Spec.Template.Spec.Containers = desiredDeployment.Spec.Template.Spec.Containers
+			}
+		} else if currentFoundDeployment.Spec.Template.Spec.Containers[0].Image != desiredDeployment.Spec.Template.Spec.Containers[0].Image ||
+			!reflect.DeepEqual(currentFoundDeployment.Spec.Template.Spec.Containers[0].Ports, desiredDeployment.Spec.Template.Spec.Containers[0].Ports) ||
+			!reflect.DeepEqual(currentFoundDeployment.Spec.Template.Spec.Containers[0].Env, desiredDeployment.Spec.Template.Spec.Containers[0].Env) ||
+			!reflect.DeepEqual(currentFoundDeployment.Spec.Template.Spec.Containers[0].Resources, desiredDeployment.Spec.Template.Spec.Containers[0].Resources) ||
+			!reflect.DeepEqual(currentFoundDeployment.Spec.Template.Spec.Containers[0].LivenessProbe, desiredDeployment.Spec.Template.Spec.Containers[0].LivenessProbe) ||
+			!reflect.DeepEqual(currentFoundDeployment.Spec.Template.Spec.Containers[0].ReadinessProbe, desiredDeployment.Spec.Template.Spec.Containers[0].ReadinessProbe) {
+			needsUpdate = true
+			currentFoundDeployment.Spec.Template.Spec.Containers = desiredDeployment.Spec.Template.Spec.Containers
+		}
+
+		if !reflect.DeepEqual(currentFoundDeployment.Labels, desiredDeployment.Labels) {
+			needsUpdate = true
+			currentFoundDeployment.Labels = desiredDeployment.Labels
+		}
+		// For annotations, be careful about overwriting system-added ones.
+		// Merge strategy might be better if you only control a subset of annotations.
+		if !reflect.DeepEqual(currentFoundDeployment.Annotations, desiredDeployment.Annotations) {
+			needsUpdate = true
+			currentFoundDeployment.Annotations = desiredDeployment.Annotations
+		}
+
+		if !needsUpdate {
+			logger.V(1).Info("Deployment is already in desired state, no update needed within retry loop.", "Deployment.Name", deploymentName)
+			updatedDeployment = currentFoundDeployment // It's current and up-to-date
+			return nil                                 // No update attempt needed
+		}
+
+		logger.Info("Attempting to update existing Deployment", "Deployment.Name", deploymentName)
+		// The Update call uses currentFoundDeployment which has the latest ResourceVersion
+		updateOpErr := r.Update(ctx, currentFoundDeployment)
+		if updateOpErr == nil {
+			updatedDeployment = currentFoundDeployment // Store the successfully updated object
+		}
+		return updateOpErr // This error will be checked by RetryOnConflict
+	})
+
+	if updateErr != nil {
+		r.Recorder.Eventf(app, corev1.EventTypeWarning, ReasonDeploymentFailed, "Failed to update Deployment %s after retries: %v", deploymentName, updateErr)
+		return nil, fmt.Errorf("failed to update Deployment after retries: %w", updateErr)
 	}
 
-	logger.V(1).Info("Deployment is up-to-date", "Deployment.Namespace", foundDeployment.Namespace, "Deployment.Name", foundDeployment.Name)
-	return foundDeployment, nil
+	if updatedDeployment == nil && !apierrors.IsNotFound(err) { // If updateErr was nil but updatedDeployment wasn't set (e.g., needsUpdate was false)
+		updatedDeployment = foundDeployment // Use the initially found one if no update occurred.
+	}
+
+	if updateErr == nil { // Only record event if update was successful or no update was needed
+		// Check if an update actually happened to differentiate event reason
+		if !reflect.DeepEqual(foundDeployment.Spec, updatedDeployment.Spec) ||
+			!reflect.DeepEqual(foundDeployment.Labels, updatedDeployment.Labels) ||
+			!reflect.DeepEqual(foundDeployment.Annotations, updatedDeployment.Annotations) {
+			r.Recorder.Eventf(app, corev1.EventTypeNormal, ReasonDeploymentUpdated, "Updated Deployment %s/%s", updatedDeployment.Namespace, updatedDeployment.Name)
+		} else {
+			logger.V(1).Info("Deployment is up-to-date", "Deployment.Namespace", updatedDeployment.Namespace, "Deployment.Name", updatedDeployment.Name)
+		}
+	}
+
+	return updatedDeployment, nil
 }
 
 func (r *ApplicationReconciler) reconcileService(ctx context.Context, app *appsv1alpha1.Application) (*corev1.Service, error) {

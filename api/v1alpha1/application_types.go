@@ -151,7 +151,7 @@ type ApplicationStatus struct {
 // +kubebuilder:printcolumn:name="Image",type=string,JSONPath=`.spec.image`
 // +kubebuilder:printcolumn:name="Replicas",type=integer,JSONPath=`.spec.replicas`
 // +kubebuilder:printcolumn:name="IngressURL",type=string,JSONPath=`.status.ingressURL`
-// +kubebuilder:printcolumn:name="AppStatus",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].status`
+// +kubebuilder:printcolumn:name="AppReady",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].status`
 // +kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
 // Application is the Schema for the applications API
 type Application struct {
