@@ -42,7 +42,7 @@ import (
 
 const (
 	applicationFinalizer        = "apps.example.com/finalizer"
-	ConditionTypeReady          = "Ready"                      // For the main Ready condition
+	ConditionTypeReady          = "Ready" // For the main Ready condition
 	ConditionAvailable          = "Available"
 	ConditionProgressing        = "Progressing"
 	ConditionDegraded           = "Degraded"
@@ -164,7 +164,7 @@ func (r *ApplicationReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	// At the beginning of each reconcile that's not a deletion, set ObservedGeneration.
 	if currentStatus.ObservedGeneration != app.Generation {
 		currentStatus.ObservedGeneration = app.Generation
-		statusNeedsUpdate = true 
+		statusNeedsUpdate = true
 	}
 
 	// Reconcile Deployment
@@ -172,15 +172,35 @@ func (r *ApplicationReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	if deploymentErr != nil {
 		logger.Error(deploymentErr, "Failed to reconcile Deployment")
 		errMsg := "Deployment reconciliation failed: " + deploymentErr.Error()
-		if setApplicationCondition(currentStatus, ConditionDegraded, metav1.ConditionTrue, ReasonDeploymentFailed, errMsg, app.Generation) { statusNeedsUpdate = true }
-		if setApplicationCondition(currentStatus, ConditionAvailable, metav1.ConditionFalse, ReasonDeploymentFailed, errMsg, app.Generation) { statusNeedsUpdate = true }
-		if setApplicationCondition(currentStatus, ConditionProgressing, metav1.ConditionFalse, ReasonDeploymentFailed, errMsg, app.Generation) { statusNeedsUpdate = true }
-		if currentStatus.DeploymentName != "" { currentStatus.DeploymentName = ""; statusNeedsUpdate = true }
-		if currentStatus.AvailableReplicas != 0 { currentStatus.AvailableReplicas = 0; statusNeedsUpdate = true }
+		if setApplicationCondition(currentStatus, ConditionDegraded, metav1.ConditionTrue, ReasonDeploymentFailed, errMsg, app.Generation) {
+			statusNeedsUpdate = true
+		}
+		if setApplicationCondition(currentStatus, ConditionAvailable, metav1.ConditionFalse, ReasonDeploymentFailed, errMsg, app.Generation) {
+			statusNeedsUpdate = true
+		}
+		if setApplicationCondition(currentStatus, ConditionProgressing, metav1.ConditionFalse, ReasonDeploymentFailed, errMsg, app.Generation) {
+			statusNeedsUpdate = true
+		}
+		if currentStatus.DeploymentName != "" {
+			currentStatus.DeploymentName = ""
+			statusNeedsUpdate = true
+		}
+		if currentStatus.AvailableReplicas != 0 {
+			currentStatus.AvailableReplicas = 0
+			statusNeedsUpdate = true
+		}
 	} else if deployment != nil { // Deployment reconciled successfully (created or updated or found up-to-date)
-		if currentStatus.DeploymentName != deployment.Name { currentStatus.DeploymentName = deployment.Name; statusNeedsUpdate = true }
-		if currentStatus.AvailableReplicas != deployment.Status.AvailableReplicas { currentStatus.AvailableReplicas = deployment.Status.AvailableReplicas; statusNeedsUpdate = true }
-		if updateConditionsFromDeployment(deployment, currentStatus, app.Generation) { statusNeedsUpdate = true }
+		if currentStatus.DeploymentName != deployment.Name {
+			currentStatus.DeploymentName = deployment.Name
+			statusNeedsUpdate = true
+		}
+		if currentStatus.AvailableReplicas != deployment.Status.AvailableReplicas {
+			currentStatus.AvailableReplicas = deployment.Status.AvailableReplicas
+			statusNeedsUpdate = true
+		}
+		if updateConditionsFromDeployment(deployment, currentStatus, app.Generation) {
+			statusNeedsUpdate = true
+		}
 	}
 
 	// Reconcile Service
@@ -188,10 +208,18 @@ func (r *ApplicationReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	if serviceErr != nil {
 		logger.Error(serviceErr, "Failed to reconcile Service")
 		errMsg := "Service reconciliation failed: " + serviceErr.Error()
-		if setApplicationCondition(currentStatus, ConditionDegraded, metav1.ConditionTrue, ReasonServiceError, errMsg, app.Generation) { statusNeedsUpdate = true }
-		if currentStatus.ServiceName != "" { currentStatus.ServiceName = ""; statusNeedsUpdate = true }
+		if setApplicationCondition(currentStatus, ConditionDegraded, metav1.ConditionTrue, ReasonServiceError, errMsg, app.Generation) {
+			statusNeedsUpdate = true
+		}
+		if currentStatus.ServiceName != "" {
+			currentStatus.ServiceName = ""
+			statusNeedsUpdate = true
+		}
 	} else if service != nil {
-		if currentStatus.ServiceName != service.Name { currentStatus.ServiceName = service.Name; statusNeedsUpdate = true }
+		if currentStatus.ServiceName != service.Name {
+			currentStatus.ServiceName = service.Name
+			statusNeedsUpdate = true
+		}
 	}
 
 	// Reconcile Ingress (if specified)
@@ -201,65 +229,105 @@ func (r *ApplicationReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		if serviceErr != nil {
 			ingressErr = fmt.Errorf("service reconciliation failed, cannot proceed with Ingress: %w", serviceErr)
 			logger.Error(ingressErr, "Prerequisite for Ingress not met")
-			if setApplicationCondition(currentStatus, ConditionDegraded, metav1.ConditionTrue, ReasonIngressError, ingressErr.Error(), app.Generation) { statusNeedsUpdate = true }
+			if setApplicationCondition(currentStatus, ConditionDegraded, metav1.ConditionTrue, ReasonIngressError, ingressErr.Error(), app.Generation) {
+				statusNeedsUpdate = true
+			}
 		} else if service == nil {
 			ingressErr = fmt.Errorf("service object is nil, cannot create Ingress for service %s", app.Name+"-service")
 			logger.Error(ingressErr, "Prerequisite for Ingress not met")
-			if setApplicationCondition(currentStatus, ConditionDegraded, metav1.ConditionTrue, ReasonIngressError, ingressErr.Error(), app.Generation) { statusNeedsUpdate = true }
-		} else { 
+			if setApplicationCondition(currentStatus, ConditionDegraded, metav1.ConditionTrue, ReasonIngressError, ingressErr.Error(), app.Generation) {
+				statusNeedsUpdate = true
+			}
+		} else {
 			var ingress *networkingv1.Ingress
 			ingress, ingressErr = r.reconcileIngress(ctx, app, service.Name)
 			if ingressErr != nil {
 				logger.Error(ingressErr, "Failed to reconcile Ingress")
 				errMsg := "Ingress reconciliation failed: " + ingressErr.Error()
-				if setApplicationCondition(currentStatus, ConditionDegraded, metav1.ConditionTrue, ReasonIngressError, errMsg, app.Generation) { statusNeedsUpdate = true }
-				if currentStatus.IngressName != "" { currentStatus.IngressName = ""; statusNeedsUpdate = true }
-				if currentStatus.IngressURL != "" { currentStatus.IngressURL = ""; statusNeedsUpdate = true }
+				if setApplicationCondition(currentStatus, ConditionDegraded, metav1.ConditionTrue, ReasonIngressError, errMsg, app.Generation) {
+					statusNeedsUpdate = true
+				}
+				if currentStatus.IngressName != "" {
+					currentStatus.IngressName = ""
+					statusNeedsUpdate = true
+				}
+				if currentStatus.IngressURL != "" {
+					currentStatus.IngressURL = ""
+					statusNeedsUpdate = true
+				}
 			} else if ingress != nil {
-				if currentStatus.IngressName != ingress.Name { currentStatus.IngressName = ingress.Name; statusNeedsUpdate = true }
+				if currentStatus.IngressName != ingress.Name {
+					currentStatus.IngressName = ingress.Name
+					statusNeedsUpdate = true
+				}
 				var newIngressURL string
 				if len(ingress.Spec.Rules) > 0 && ingress.Spec.Rules[0].Host != "" {
-					scheme := "http"; if len(ingress.Spec.TLS) > 0 { scheme = "https" }
-					path := "/"; if len(ingress.Spec.Rules[0].HTTP.Paths) > 0 { path = ingress.Spec.Rules[0].HTTP.Paths[0].Path }
+					scheme := "http"
+					if len(ingress.Spec.TLS) > 0 {
+						scheme = "https"
+					}
+					path := "/"
+					if len(ingress.Spec.Rules[0].HTTP.Paths) > 0 {
+						path = ingress.Spec.Rules[0].HTTP.Paths[0].Path
+					}
 					newIngressURL = fmt.Sprintf("%s://%s%s", scheme, ingress.Spec.Rules[0].Host, path)
 				}
-				if currentStatus.IngressURL != newIngressURL { currentStatus.IngressURL = newIngressURL; statusNeedsUpdate = true }
+				if currentStatus.IngressURL != newIngressURL {
+					currentStatus.IngressURL = newIngressURL
+					statusNeedsUpdate = true
+				}
 			}
 		}
-	} else { 
+	} else {
 		if err := r.ensureIngressDeleted(ctx, app); err != nil {
 			ingressErr = err // Capture error from deletion attempt
 			logger.Error(ingressErr, "Failed to ensure Ingress is deleted")
 			errMsg := "Failed to delete old ingress: " + ingressErr.Error()
-			if setApplicationCondition(currentStatus, ConditionDegraded, metav1.ConditionTrue, ReasonIngressError, errMsg, app.Generation) { statusNeedsUpdate = true }
+			if setApplicationCondition(currentStatus, ConditionDegraded, metav1.ConditionTrue, ReasonIngressError, errMsg, app.Generation) {
+				statusNeedsUpdate = true
+			}
 		}
-		if currentStatus.IngressName != "" { currentStatus.IngressName = ""; statusNeedsUpdate = true }
-		if currentStatus.IngressURL != "" { currentStatus.IngressURL = ""; statusNeedsUpdate = true }
+		if currentStatus.IngressName != "" {
+			currentStatus.IngressName = ""
+			statusNeedsUpdate = true
+		}
+		if currentStatus.IngressURL != "" {
+			currentStatus.IngressURL = ""
+			statusNeedsUpdate = true
+		}
 	}
 
 	// Determine overall application readiness and set the "Ready" condition, so that we can show it on status column
-	appIsCurrentlyReady := isAppReady(currentStatus) 
+	appIsCurrentlyReady := isAppReady(currentStatus)
 
 	if appIsCurrentlyReady {
-		if setApplicationCondition(currentStatus, ConditionTypeReady, metav1.ConditionTrue, ReasonComponentsReady, "Application is fully provisioned and ready.", app.Generation) { statusNeedsUpdate = true }
-		if setApplicationCondition(currentStatus, ConditionAvailable, metav1.ConditionTrue, ReasonComponentsReady, "Application components are available.", app.Generation) {statusNeedsUpdate = true}
-		if setApplicationCondition(currentStatus, ConditionProgressing, metav1.ConditionTrue, ReasonComponentsReady, "Application deployment is stable and complete.", app.Generation) {statusNeedsUpdate = true}
-		if setApplicationCondition(currentStatus, ConditionDegraded, metav1.ConditionFalse, ReasonComponentsReady, "Application is not degraded.", app.Generation) {statusNeedsUpdate = true}
+		if setApplicationCondition(currentStatus, ConditionTypeReady, metav1.ConditionTrue, ReasonComponentsReady, "Application is fully provisioned and ready.", app.Generation) {
+			statusNeedsUpdate = true
+		}
+		if setApplicationCondition(currentStatus, ConditionAvailable, metav1.ConditionTrue, ReasonComponentsReady, "Application components are available.", app.Generation) {
+			statusNeedsUpdate = true
+		}
+		if setApplicationCondition(currentStatus, ConditionProgressing, metav1.ConditionTrue, ReasonComponentsReady, "Application deployment is stable and complete.", app.Generation) {
+			statusNeedsUpdate = true
+		}
+		if setApplicationCondition(currentStatus, ConditionDegraded, metav1.ConditionFalse, ReasonComponentsReady, "Application is not degraded.", app.Generation) {
+			statusNeedsUpdate = true
+		}
 	} else {
 		var notReadyReason string = ReasonComponentsNotReady
 		var notReadyMessage string = "Application is not yet ready; see other conditions for details."
 
 		for _, cond := range currentStatus.Conditions {
 			if cond.Type == ConditionDegraded && cond.Status == metav1.ConditionTrue {
-				notReadyReason = cond.Reason 
+				notReadyReason = cond.Reason
 				notReadyMessage = fmt.Sprintf("Application is not ready: Degraded - %s", cond.Message)
 				break
 			}
 		}
-		if notReadyReason == ReasonComponentsNotReady { 
+		if notReadyReason == ReasonComponentsNotReady {
 			for _, cond := range currentStatus.Conditions {
 				if cond.Type == ConditionProgressing && cond.Status == metav1.ConditionFalse {
-					notReadyReason = cond.Reason 
+					notReadyReason = cond.Reason
 					notReadyMessage = fmt.Sprintf("Application is not ready: Progressing - %s", cond.Message)
 					break
 				}
@@ -274,7 +342,9 @@ func (r *ApplicationReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 				}
 			}
 		}
-		if setApplicationCondition(currentStatus, ConditionTypeReady, metav1.ConditionFalse, notReadyReason, notReadyMessage, app.Generation) { statusNeedsUpdate = true }
+		if setApplicationCondition(currentStatus, ConditionTypeReady, metav1.ConditionFalse, notReadyReason, notReadyMessage, app.Generation) {
+			statusNeedsUpdate = true
+		}
 	}
 
 	var finalErr error
@@ -284,18 +354,24 @@ func (r *ApplicationReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		logger.Info("Status requires update.", "application", app.Name)
 		finalResult, finalErr = r.updateFullStatus(ctx, app, currentStatus)
 		if finalErr != nil {
-			return finalResult, finalErr 
+			return finalResult, finalErr
 		}
 	} else {
 		logger.V(1).Info("No status changes required for this reconciliation cycle.", "application", app.Name)
 	}
-	
-	if deploymentErr != nil { return ctrl.Result{}, deploymentErr }
-	if serviceErr != nil { return ctrl.Result{}, serviceErr }
-	if ingressErr != nil { return ctrl.Result{}, ingressErr }
+
+	if deploymentErr != nil {
+		return ctrl.Result{}, deploymentErr
+	}
+	if serviceErr != nil {
+		return ctrl.Result{}, serviceErr
+	}
+	if ingressErr != nil {
+		return ctrl.Result{}, ingressErr
+	}
 
 	// Requeue if deployment is not yet fully available (replicas not met)
-	appIsNowConsideredReady := isAppReady(currentStatus) 
+	appIsNowConsideredReady := isAppReady(currentStatus)
 
 	if !appIsNowConsideredReady {
 		requeueDelay := 15 * time.Second
@@ -307,15 +383,15 @@ func (r *ApplicationReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 			}
 		}
 		if (deployment != nil && deployment.Status.AvailableReplicas < *app.Spec.Replicas) || isStillProgressing {
-			logger.Info("Application not fully ready or deployment progressing, requeuing.", 
-				"desiredReplicas", *app.Spec.Replicas, 
-				"availableReplicas", currentStatus.AvailableReplicas, 
+			logger.Info("Application not fully ready or deployment progressing, requeuing.",
+				"desiredReplicas", *app.Spec.Replicas,
+				"availableReplicas", currentStatus.AvailableReplicas,
 				"isStillProgressing", isStillProgressing,
 				"requeueAfter", requeueDelay)
 		} else {
-            requeueDelay = 30 * time.Second 
+			requeueDelay = 30 * time.Second
 			logger.Info("Application not fully ready (check component statuses), requeuing.", "requeueAfter", requeueDelay)
-        }
+		}
 		return ctrl.Result{RequeueAfter: requeueDelay}, nil
 	}
 
@@ -356,7 +432,7 @@ func (r *ApplicationReconciler) applySpecDefaults(app *appsv1alpha1.Application)
 			log.Log.Info("Warning: Service.Type specified as non-ClusterIP, but controller only supports ClusterIP. Will default to ClusterIP.", "application", app.Name, "specifiedType", *app.Spec.Service.Type)
 			serviceTypeClusterIP := corev1.ServiceTypeClusterIP
 			app.Spec.Service.Type = &serviceTypeClusterIP
-			changed = true 
+			changed = true
 		}
 	}
 
@@ -381,8 +457,8 @@ func (r *ApplicationReconciler) reconcileDeployment(ctx context.Context, app *ap
 	logger := log.FromContext(ctx)
 	deploymentName := app.Name + "-deployment"
 
-	replicas := app.Spec.Replicas             
-	containerPort := *app.Spec.ContainerPort 
+	replicas := app.Spec.Replicas
+	containerPort := *app.Spec.ContainerPort
 
 	desiredDeployment := &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
@@ -448,7 +524,8 @@ func (r *ApplicationReconciler) reconcileDeployment(ctx context.Context, app *ap
 		needsUpdate := false
 		// Compare and apply changes from desiredDeployment.Spec to currentFoundDeployment.Spec
 		if !reflect.DeepEqual(currentFoundDeployment.Spec.Replicas, desiredDeployment.Spec.Replicas) {
-			needsUpdate = true; currentFoundDeployment.Spec.Replicas = desiredDeployment.Spec.Replicas
+			needsUpdate = true
+			currentFoundDeployment.Spec.Replicas = desiredDeployment.Spec.Replicas
 		}
 		if !reflect.DeepEqual(currentFoundDeployment.Spec.Template.Spec, desiredDeployment.Spec.Template.Spec) {
 			needsUpdate = true
@@ -459,19 +536,20 @@ func (r *ApplicationReconciler) reconcileDeployment(ctx context.Context, app *ap
 			currentFoundDeployment.Spec.Template.ObjectMeta.Labels = desiredDeployment.Spec.Template.ObjectMeta.Labels
 		}
 
-
 		// Compare top-level labels and annotations of the Deployment itself
 		if !reflect.DeepEqual(currentFoundDeployment.Labels, desiredDeployment.Labels) {
-			needsUpdate = true; currentFoundDeployment.Labels = desiredDeployment.Labels
+			needsUpdate = true
+			currentFoundDeployment.Labels = desiredDeployment.Labels
 		}
-		if currentFoundDeployment.Annotations == nil { currentFoundDeployment.Annotations = make(map[string]string) }
+		if currentFoundDeployment.Annotations == nil {
+			currentFoundDeployment.Annotations = make(map[string]string)
+		}
 		for k, v := range desiredDeployment.Annotations {
 			if currentFoundDeployment.Annotations[k] != v {
 				currentFoundDeployment.Annotations[k] = v
 				needsUpdate = true
 			}
 		}
-
 
 		if !needsUpdate {
 			logger.V(1).Info("Deployment is already in desired state within retry loop.", "Deployment.Name", deploymentName)
@@ -491,21 +569,21 @@ func (r *ApplicationReconciler) reconcileDeployment(ctx context.Context, app *ap
 		r.Recorder.Eventf(app, corev1.EventTypeWarning, ReasonDeploymentFailed, "Failed to update Deployment %s after retries: %v", deploymentName, updateErr)
 		return nil, fmt.Errorf("failed to update Deployment '%s' after retries: %w", deploymentName, updateErr)
 	}
-	
+
 	if updatedDeployment == nil {
-	    updatedDeployment = foundDeployment
+		updatedDeployment = foundDeployment
 	}
 
 	// Check if an update was *attempted and successful* vs. *no update needed*
 	// foundDeployment is the state before the retry loop. updatedDeployment is the state after.
 	if !reflect.DeepEqual(foundDeployment.Spec, updatedDeployment.Spec) ||
-	   !reflect.DeepEqual(foundDeployment.Labels, updatedDeployment.Labels) ||
-	   !reflect.DeepEqual(foundDeployment.Annotations, updatedDeployment.Annotations) {
+		!reflect.DeepEqual(foundDeployment.Labels, updatedDeployment.Labels) ||
+		!reflect.DeepEqual(foundDeployment.Annotations, updatedDeployment.Annotations) {
 		r.Recorder.Eventf(app, corev1.EventTypeNormal, ReasonDeploymentUpdated, "Updated Deployment %s/%s", updatedDeployment.Namespace, updatedDeployment.Name)
-	} else if updateErr == nil { 
+	} else if updateErr == nil {
 		logger.V(1).Info("Deployment confirmed up-to-date", "Deployment.Namespace", updatedDeployment.Namespace, "Deployment.Name", updatedDeployment.Name)
 	}
-	
+
 	return updatedDeployment, nil
 }
 
@@ -562,16 +640,20 @@ func (r *ApplicationReconciler) reconcileService(ctx context.Context, app *appsv
 
 		needsActualUpdate := false
 		if currentFoundService.Spec.Type != corev1.ServiceTypeClusterIP {
-			currentFoundService.Spec.Type = corev1.ServiceTypeClusterIP; needsActualUpdate = true
+			currentFoundService.Spec.Type = corev1.ServiceTypeClusterIP
+			needsActualUpdate = true
 		}
 		if !reflect.DeepEqual(currentFoundService.Spec.Ports, desiredService.Spec.Ports) {
-			currentFoundService.Spec.Ports = desiredService.Spec.Ports; needsActualUpdate = true
+			currentFoundService.Spec.Ports = desiredService.Spec.Ports
+			needsActualUpdate = true
 		}
 		if !reflect.DeepEqual(currentFoundService.Spec.Selector, desiredService.Spec.Selector) {
-			currentFoundService.Spec.Selector = desiredService.Spec.Selector; needsActualUpdate = true
+			currentFoundService.Spec.Selector = desiredService.Spec.Selector
+			needsActualUpdate = true
 		}
 		if !reflect.DeepEqual(currentFoundService.Labels, desiredService.Labels) {
-			currentFoundService.Labels = desiredService.Labels; needsActualUpdate = true
+			currentFoundService.Labels = desiredService.Labels
+			needsActualUpdate = true
 		}
 
 		if !needsActualUpdate {
@@ -579,13 +661,12 @@ func (r *ApplicationReconciler) reconcileService(ctx context.Context, app *appsv
 			updatedService = currentFoundService
 			return nil
 		}
-		
+
 		existingClusterIP := currentFoundService.Spec.ClusterIP
-		currentFoundService.Spec.Type = corev1.ServiceTypeClusterIP 
+		currentFoundService.Spec.Type = corev1.ServiceTypeClusterIP
 		if currentFoundService.Spec.Type == corev1.ServiceTypeClusterIP {
 			currentFoundService.Spec.ClusterIP = existingClusterIP
 		}
-
 
 		logger.Info("Attempting to update existing Service", "Service.Name", serviceName)
 		updateOpErr := r.Update(ctx, currentFoundService)
@@ -600,23 +681,24 @@ func (r *ApplicationReconciler) reconcileService(ctx context.Context, app *appsv
 		return nil, fmt.Errorf("failed to update Service '%s' after retries: %w", serviceName, updateErr)
 	}
 
-	if updatedService == nil { updatedService = foundService }
+	if updatedService == nil {
+		updatedService = foundService
+	}
 
 	if !reflect.DeepEqual(foundService.Spec, updatedService.Spec) || !reflect.DeepEqual(foundService.Labels, updatedService.Labels) {
 		r.Recorder.Eventf(app, corev1.EventTypeNormal, ReasonServiceUpdated, "Updated Service %s/%s", updatedService.Namespace, updatedService.Name)
 	} else if updateErr == nil {
 		logger.V(1).Info("Service confirmed up-to-date", "Service.Namespace", updatedService.Namespace, "Service.Name", updatedService.Name)
 	}
-	
+
 	return updatedService, nil
 }
-
 
 // reconcileIngress ensures the Ingress for the Application is correctly configured.
 func (r *ApplicationReconciler) reconcileIngress(ctx context.Context, app *appsv1alpha1.Application, serviceName string) (*networkingv1.Ingress, error) {
 	logger := log.FromContext(ctx)
 	ingressName := app.Name + "-ingress"
-	ingressSpec := app.Spec.Ingress 
+	ingressSpec := app.Spec.Ingress
 
 	backendServicePort := *app.Spec.ContainerPort
 	if app.Spec.Service != nil && app.Spec.Service.Port != nil {
@@ -677,13 +759,16 @@ func (r *ApplicationReconciler) reconcileIngress(ctx context.Context, app *appsv
 
 		needsActualUpdate := false
 		if !reflect.DeepEqual(currentFoundIngress.Spec, desiredIngress.Spec) {
-			currentFoundIngress.Spec = desiredIngress.Spec; needsActualUpdate = true
+			currentFoundIngress.Spec = desiredIngress.Spec
+			needsActualUpdate = true
 		}
 		if !reflect.DeepEqual(currentFoundIngress.Labels, desiredIngress.Labels) {
-			currentFoundIngress.Labels = desiredIngress.Labels; needsActualUpdate = true
+			currentFoundIngress.Labels = desiredIngress.Labels
+			needsActualUpdate = true
 		}
 		if !reflect.DeepEqual(currentFoundIngress.Annotations, desiredIngress.Annotations) {
-			currentFoundIngress.Annotations = desiredIngress.Annotations; needsActualUpdate = true
+			currentFoundIngress.Annotations = desiredIngress.Annotations
+			needsActualUpdate = true
 		}
 
 		if !needsActualUpdate {
@@ -699,16 +784,18 @@ func (r *ApplicationReconciler) reconcileIngress(ctx context.Context, app *appsv
 		}
 		return updateOpErr
 	})
-	
+
 	if updateErr != nil {
 		r.Recorder.Eventf(app, corev1.EventTypeWarning, ReasonIngressError, "Failed to update Ingress %s after retries: %v", ingressName, updateErr)
 		return nil, fmt.Errorf("failed to update Ingress '%s' after retries: %w", ingressName, updateErr)
 	}
-	if updatedIngress == nil { updatedIngress = foundIngress }
+	if updatedIngress == nil {
+		updatedIngress = foundIngress
+	}
 
-	if !reflect.DeepEqual(foundIngress.Spec, updatedIngress.Spec) || 
-	   !reflect.DeepEqual(foundIngress.Labels, updatedIngress.Labels) ||
-	   !reflect.DeepEqual(foundIngress.Annotations, updatedIngress.Annotations) {
+	if !reflect.DeepEqual(foundIngress.Spec, updatedIngress.Spec) ||
+		!reflect.DeepEqual(foundIngress.Labels, updatedIngress.Labels) ||
+		!reflect.DeepEqual(foundIngress.Annotations, updatedIngress.Annotations) {
 		r.Recorder.Eventf(app, corev1.EventTypeNormal, ReasonIngressUpdated, "Updated Ingress %s/%s", updatedIngress.Namespace, updatedIngress.Name)
 	} else if updateErr == nil {
 		logger.V(1).Info("Ingress confirmed up-to-date", "Ingress.Namespace", updatedIngress.Namespace, "Ingress.Name", updatedIngress.Name)
@@ -720,18 +807,18 @@ func (r *ApplicationReconciler) reconcileIngress(ctx context.Context, app *appsv
 func (r *ApplicationReconciler) ensureIngressDeleted(ctx context.Context, app *appsv1alpha1.Application) error {
 	logger := log.FromContext(ctx)
 	ingressName := app.Name + "-ingress"
-	
+
 	ingressToDelete := &networkingv1.Ingress{
-		ObjectMeta: metav1.ObjectMeta{ Name: ingressName, Namespace: app.Namespace },
+		ObjectMeta: metav1.ObjectMeta{Name: ingressName, Namespace: app.Namespace},
 	}
-	
+
 	err := r.Delete(ctx, ingressToDelete, client.PropagationPolicy(metav1.DeletePropagationForeground))
-	if err != nil && !apierrors.IsNotFound(err) { 
+	if err != nil && !apierrors.IsNotFound(err) {
 		r.Recorder.Eventf(app, corev1.EventTypeWarning, ReasonIngressError, "Failed to delete Ingress %s: %v", ingressName, err)
 		return fmt.Errorf("failed to delete Ingress %s: %w", ingressName, err)
 	}
-	if err == nil || apierrors.IsNotFound(err) { 
-		if !apierrors.IsNotFound(err) { 
+	if err == nil || apierrors.IsNotFound(err) {
+		if !apierrors.IsNotFound(err) {
 			logger.Info("Ingress deleted successfully or was already gone", "IngressName", ingressName)
 			r.Recorder.Eventf(app, corev1.EventTypeNormal, ReasonIngressDeleted, "Ingress %s/%s deleted as spec.ingress is nil", app.Namespace, ingressName)
 		} else {
@@ -743,11 +830,11 @@ func (r *ApplicationReconciler) ensureIngressDeleted(ctx context.Context, app *a
 
 func (r *ApplicationReconciler) getAppLabels(app *appsv1alpha1.Application, componentName string) map[string]string {
 	labels := make(map[string]string)
-	for k, v := range app.Labels { 
+	for k, v := range app.Labels {
 		labels[k] = v
 	}
 	labels["app.kubernetes.io/name"] = app.Name
-	labels["app.kubernetes.io/instance"] = app.Name 
+	labels["app.kubernetes.io/instance"] = app.Name
 	labels["app.kubernetes.io/managed-by"] = "application-lifecycle-manager"
 	labels["app.kubernetes.io/component"] = componentName
 	return labels
@@ -756,7 +843,7 @@ func (r *ApplicationReconciler) getAppLabels(app *appsv1alpha1.Application, comp
 func (r *ApplicationReconciler) getSelectorLabels(app *appsv1alpha1.Application) map[string]string {
 	return map[string]string{
 		"app.kubernetes.io/name":     app.Name,
-		"app.kubernetes.io/instance": app.Name, 
+		"app.kubernetes.io/instance": app.Name,
 	}
 }
 
@@ -773,14 +860,16 @@ func setApplicationCondition(status *appsv1alpha1.ApplicationStatus, conditionTy
 		Type: conditionType, Status: conditionStatus, Reason: reason, Message: message,
 		LastTransitionTime: now, ObservedGeneration: observedGeneration,
 	}
-	if status.Conditions == nil { status.Conditions = []metav1.Condition{} }
+	if status.Conditions == nil {
+		status.Conditions = []metav1.Condition{}
+	}
 	for i, c := range status.Conditions {
 		if c.Type == conditionType {
 			if c.Status == newCondition.Status && c.Reason == newCondition.Reason && c.Message == newCondition.Message && c.ObservedGeneration == newCondition.ObservedGeneration {
-				return false 
+				return false
 			}
 			status.Conditions[i] = newCondition
-			return true 
+			return true
 		}
 	}
 	status.Conditions = append(status.Conditions, newCondition)
@@ -827,7 +916,7 @@ func updateConditionsFromDeployment(deployment *appsv1.Deployment, status *appsv
 			newProgressingMessage = fmt.Sprintf("Deployment rollout in progress: updated %d/%d, total %d", deployment.Status.UpdatedReplicas, desiredReplicas, deployment.Status.Replicas)
 		} else if deployment.Status.AvailableReplicas < desiredReplicas {
 			newProgressingMessage = fmt.Sprintf("Deployment rollout appears complete but waiting for %d available replicas (currently %d).", desiredReplicas, deployment.Status.AvailableReplicas)
-		} else { 
+		} else {
 			newProgressingStatus = metav1.ConditionTrue
 			newProgressingMessage = "Deployment rollout appears complete and all replicas available."
 		}
@@ -840,7 +929,7 @@ func updateConditionsFromDeployment(deployment *appsv1.Deployment, status *appsv
 
 func isAppReady(status *appsv1alpha1.ApplicationStatus) bool {
 	isAvailable := false
-	isProgressingStable := false 
+	isProgressingStable := false
 	isDegraded := false
 	for _, cond := range status.Conditions {
 		if cond.Type == ConditionAvailable && cond.Status == metav1.ConditionTrue {

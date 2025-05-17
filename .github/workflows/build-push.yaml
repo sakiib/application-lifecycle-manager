@@ -1,15 +1,17 @@
 name: Build and Push Docker Image
 
 on:
-  push:
-    branches: [ main, master ]
-  pull_request:
-    branches: [ main, master ]
+  workflow_run:
+    workflows: ["Tests"]
+    branches: ["main"]
+    types:
+      - completed
 
 jobs:
   test:
     name: Run on Ubuntu
     runs-on: ubuntu-latest
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
     steps:
       - name: Clone the code
         uses: actions/checkout@v4

@@ -2,7 +2,9 @@
 
 [![Build and Push Docker Image](https://github.com/sakiib/application-lifecycle-manager/actions/workflows/build-push.yaml/badge.svg)](https://github.com/sakiib/application-lifecycle-manager/actions/workflows/build-push.yaml)
 
-**Play the demo**
+[![Tests](https://github.com/sakiib/application-lifecycle-manager/actions/workflows/test.yaml/badge.svg)](https://github.com/sakiib/application-lifecycle-manager/actions/workflows/test.yaml)
+
+🎮 **Play the demo**
 ```sh
 asciinema play application-lifecycle-manager-demo.cast
 ```
@@ -331,16 +333,12 @@ graph LR
 
 *   **Controller Logs:**
     ```sh
-    kubectl logs -f -n application-lifecycle-manager-system -l control-plane=controller-manager 
+    kubectl logs -f -n application-lifecycle-manager-system <controller-pod-name>
     ```
 *   **`Application` CR Status:**
     ```sh
-    kubectl get application <app-name> -n <app-namespace> -o yaml
-    kubectl describe application <app-name> -n <app-namespace>
-    ```
-*   **Events:**
-    ```sh
-    kubectl get events -n <app-namespace> --field-selector involvedObject.kind=Application,involvedObject.name=<app-name>
+    kubectl get application <app-name> -n application-lifecycle-manager-system -o yaml
+    kubectl describe application <app-name> -n application-lifecycle-manager-system
     ```
 
 ## 🤝 Contributing
