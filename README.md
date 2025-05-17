@@ -1,6 +1,11 @@
 # Application Lifecycle Manager for Kubernetes
 
-Demo Link
+[![Build and Push Docker Image](https://github.com/sakiib/application-lifecycle-manager/actions/workflows/build-push.yaml/badge.svg)](https://github.com/sakiib/application-lifecycle-manager/actions/workflows/build-push.yaml)
+
+**Play the demo**
+```sh
+asciinema play application-lifecycle-manager-demo.cast
+```
 
 ## 🔥 The Challenge: Complex Application Deployments in Kubernetes
 
