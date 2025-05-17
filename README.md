@@ -173,23 +173,97 @@ graph LR
 3.  **Verify the Created Resources:**
     *   **Check the `Application` status:**
         ```sh
-        kubectl get application my-nginx-app -n application-lifecycle-manager-system -o yaml
-        # Look for status.deploymentName, status.serviceName, status.ingressURL, status.conditions
+        ⎈ kind-kind ~/g/s/g/s/application-lifecycle-manager (main)> kubectl23 get application -n application-lifecycle-manager-system
+        NAME            IMAGE               REPLICAS   INGRESSURL                          APPREADY   AGE
+        my-sample-app   nginx:1.25-alpine   1          http://my-sample-app.example.com/   True       6s
+        ```
+    *   **Check the `Application` output yaml structure:**
+        ```sh
+        apiVersion: apps.example.com/v1alpha1
+        kind: Application
+        metadata:
+        creationTimestamp: "2025-05-17T12:52:36Z"
+        finalizers:
+        - apps.example.com/finalizer
+        generation: 1
+        name: my-sample-app
+        namespace: application-lifecycle-manager-system
+        resourceVersion: "12463"
+        uid: 3373362e-e7b5-4292-a715-40157cef69c9
+        spec:
+        containerPort: 80
+        envVars:
+        - name: APP_ENV
+            value: production
+        - name: GREETING
+            value: Hello from Application CR
+        image: nginx:1.25-alpine
+        ingress:
+            host: my-sample-app.example.com
+            path: /
+            pathType: Prefix
+        replicas: 1
+        resources:
+            limits:
+            cpu: 200m
+            memory: 256Mi
+            requests:
+            cpu: 100m
+            memory: 128Mi
+        service:
+            port: 8080
+            type: ClusterIP
+        status:
+        availableReplicas: 1
+        conditions:
+        - lastTransitionTime: "2025-05-17T12:52:52Z"
+            message: Application components are available.
+            observedGeneration: 1
+            reason: ComponentsReady
+            status: "True"
+            type: Available
+        - lastTransitionTime: "2025-05-17T12:52:52Z"
+            message: Application deployment is stable and complete.
+            observedGeneration: 1
+            reason: ComponentsReady
+            status: "True"
+            type: Progressing
+        - lastTransitionTime: "2025-05-17T12:52:39Z"
+            message: Application is fully provisioned and ready.
+            observedGeneration: 1
+            reason: ComponentsReady
+            status: "True"
+            type: Ready
+        - lastTransitionTime: "2025-05-17T12:52:39Z"
+            message: Application is not degraded.
+            observedGeneration: 1
+            reason: ComponentsReady
+            status: "False"
+            type: Degraded
+        deploymentName: my-sample-app-deployment
+        ingressName: my-sample-app-ingress
+        ingressURL: http://my-sample-app.example.com/
+        observedGeneration: 1
+        serviceName: my-sample-app-service
         ```
     *   **Check the Deployment:**
         ```sh
-        kubectl get deployment my-nginx-app-deployment -n application-lifecycle-manager-system -o yaml 
-        kubectl get pods -n application-lifecycle-manager-system -l app.kubernetes.io/instance=my-nginx-app 
+        ⎈ kind-kind ~/g/s/g/s/application-lifecycle-manager (main)> kubectl get deploy -n application-lifecycle-manager-system my-sample-app-deployment
+        NAME                       READY   UP-TO-DATE   AVAILABLE   AGE
+        my-sample-app-deployment   1/1     1            1           3m46s
         ```
     *   **Check the Service:**
         ```sh
-        kubectl get service my-nginx-app-service -n application-lifecycle-manager-system -o yaml
+        ⎈ kind-kind ~/g/s/g/s/application-lifecycle-manager (main)> kubectl get svc -n application-lifecycle-manager-system my-sample-app-service
+        NAME                    TYPE        CLUSTER-IP     EXTERNAL-IP   PORT(S)    AGE
+        my-sample-app-service   ClusterIP   10.96.54.145   <none>        8080/TCP   4m23s
         ```
     *   **Check the Ingress (if configured):**
         ```sh
-        kubectl get ingress my-nginx-app-ingress -n application-lifecycle-manager-system -o yaml
+        ⎈ kind-kind ~/g/s/g/s/application-lifecycle-manager (main)> kubectl get ingress -n application-lifecycle-manager-system
+        NAME                    CLASS    HOSTS                       ADDRESS   PORTS   AGE
+        my-sample-app-ingress   <none>   my-sample-app.example.com             80      4m52s
         ```
-        You should be able to access your application via the Ingress host (e.g., `http://my-nginx-app.yourdomain.com`) after setting up appropriate DNS or local `/etc/hosts` entries.
 
 ### Cleaning Up
 
