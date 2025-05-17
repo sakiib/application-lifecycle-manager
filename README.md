@@ -61,7 +61,7 @@ The controller then takes over:
 ## 🧱 Architecture Diagram & Control Flow
 
 ```mermaid
-graph
+graph LR
     A[Application CRD] --> B(Controller);
     B --> C{Deployment};
     B --> D{Service};
