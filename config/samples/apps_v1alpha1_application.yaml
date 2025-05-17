@@ -4,7 +4,7 @@ metadata:
   name: my-sample-app
   namespace: application-lifecycle-manager-system
 spec:
-  replicas: 2
+  replicas: 1
   image: "nginx:1.25-alpine" # A simple image for testing
   containerPort: 80
   service:
