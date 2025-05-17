@@ -508,101 +508,142 @@ func (r *ApplicationReconciler) reconcileDeployment(ctx context.Context, app *ap
 	return foundDeployment, nil
 }
 
+// internal/controller/application_controller.go
+
+// ... (other imports and a_controller.gopackage controller code) ...
+
 func (r *ApplicationReconciler) reconcileService(ctx context.Context, app *appsv1alpha1.Application) (*corev1.Service, error) {
 	logger := log.FromContext(ctx)
-	serviceName := app.Name + "-service"
+	serviceName := app.Name + "-service" // Or derive from app.Spec if you add a field for it
 
-	// Use defaulted values from app.Spec (applySpecDefaults should have run)
-	servicePort := *app.Spec.ContainerPort
+	// Determine the service port. Default to containerPort if not specified in app.Spec.Service.
+	servicePort := *app.Spec.ContainerPort // Assumes ContainerPort is defaulted if nil
 	if app.Spec.Service != nil && app.Spec.Service.Port != nil {
 		servicePort = *app.Spec.Service.Port
 	}
-	serviceType := corev1.ServiceTypeClusterIP
-	if app.Spec.Service != nil && app.Spec.Service.Type != nil {
-		serviceType = *app.Spec.Service.Type
-	}
 
+	// ---- Define the Desired Service State (Always ClusterIP) ----
 	desiredService := &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{
-			Name: serviceName, Namespace: app.Namespace,
-			Labels: r.getAppLabels(app, "service"),
+			Name:      serviceName,
+			Namespace: app.Namespace,
+			Labels:    r.getAppLabels(app, "service"),
+			// Annotations can be added here if needed
 		},
 		Spec: corev1.ServiceSpec{
 			Ports: []corev1.ServicePort{{
 				Name:       "http", // Good practice to name ports
 				Port:       servicePort,
-				TargetPort: intstr.FromInt32(*app.Spec.ContainerPort),
+				TargetPort: intstr.FromInt32(*app.Spec.ContainerPort), // Target container port
 				Protocol:   corev1.ProtocolTCP,
 			}},
-			Selector: r.getSelectorLabels(app),
-			Type:     serviceType,
+			Selector: r.getSelectorLabels(app),    // Selects pods managed by this app's deployment
+			Type:     corev1.ServiceTypeClusterIP, // MODIFIED: Always ClusterIP
 		},
 	}
+
+	// Set Application instance as the owner and controller
 	if err := controllerutil.SetControllerReference(app, desiredService, r.Scheme); err != nil {
 		return nil, fmt.Errorf("failed to set owner reference on Service: %w", err)
 	}
 
+	// ---- Check if the Service already exists ----
 	foundService := &corev1.Service{}
 	err := r.Get(ctx, types.NamespacedName{Name: serviceName, Namespace: app.Namespace}, foundService)
+
 	if err != nil && apierrors.IsNotFound(err) {
-		logger.Info("Creating a new Service", "Service.Namespace", desiredService.Namespace, "Service.Name", desiredService.Name)
+		// ---- Create the Service if it does not exist ----
+		logger.Info("Creating a new Service", "Service.Namespace", desiredService.Namespace, "Service.Name", desiredService.Name, "Type", desiredService.Spec.Type)
 		err = r.Create(ctx, desiredService)
 		if err != nil {
+			r.Recorder.Eventf(app, corev1.EventTypeWarning, ReasonServiceError, "Failed to create Service %s: %v", desiredService.Name, err)
 			return nil, fmt.Errorf("failed to create Service: %w", err)
 		}
-		r.Recorder.Event(app, corev1.EventTypeNormal, ReasonServiceCreated, fmt.Sprintf("Created Service %s/%s", desiredService.Namespace, desiredService.Name))
+		r.Recorder.Eventf(app, corev1.EventTypeNormal, ReasonServiceCreated, "Created Service %s/%s", desiredService.Namespace, desiredService.Name)
 		return desiredService, nil
 	} else if err != nil {
+		// Other error than NotFound
+		logger.Error(err, "Failed to get Service")
 		return nil, fmt.Errorf("failed to get Service: %w", err)
 	}
 
-	// Check for updates
+	// ---- Service Exists - Ensure it matches the desired state (ClusterIP type and ports) ----
 	needsUpdate := false
-	if foundService.Spec.Type != desiredService.Spec.Type {
+
+	// 1. Check Service Type (should always be ClusterIP now)
+	if foundService.Spec.Type != corev1.ServiceTypeClusterIP {
+		logger.Info("Service type mismatch, will update to ClusterIP", "Service.Name", foundService.Name, "FoundType", foundService.Spec.Type)
+		foundService.Spec.Type = corev1.ServiceTypeClusterIP
+		// When changing type to ClusterIP, K8s might clear NodePort/LoadBalancerIPs.
+		// For ClusterIP, we want to preserve an existing ClusterIP if one was allocated.
+		// However, if foundService.Spec.ClusterIP is empty, K8s will assign one.
+		// If changing from LoadBalancer/NodePort, K8s handles cleanup of those specific fields.
+		// We don't need to explicitly clear foundService.Spec.ClusterIP here if changing TO ClusterIP.
 		needsUpdate = true
-		foundService.Spec.Type = desiredService.Spec.Type
 	}
-	if len(foundService.Spec.Ports) != 1 || // Assuming always 1 port for this example
-		foundService.Spec.Ports[0].Port != desiredService.Spec.Ports[0].Port ||
-		foundService.Spec.Ports[0].TargetPort.IntVal != desiredService.Spec.Ports[0].TargetPort.IntVal {
+
+	// 2. Check Ports (assuming one port for simplicity)
+	// Ensure labels and selector match too, as they are critical.
+	desiredPorts := desiredService.Spec.Ports
+	if len(foundService.Spec.Ports) != 1 ||
+		foundService.Spec.Ports[0].Port != desiredPorts[0].Port ||
+		foundService.Spec.Ports[0].TargetPort.IntVal != desiredPorts[0].TargetPort.IntVal ||
+		foundService.Spec.Ports[0].Protocol != desiredPorts[0].Protocol ||
+		foundService.Spec.Ports[0].Name != desiredPorts[0].Name {
+		logger.Info("Service port configuration mismatch, will update.", "Service.Name", foundService.Name)
+		foundService.Spec.Ports = desiredPorts
 		needsUpdate = true
-		foundService.Spec.Ports = desiredService.Spec.Ports
 	}
-	// Preserve ClusterIP if it's a ClusterIP service and already allocated
-	if foundService.Spec.Type == corev1.ServiceTypeClusterIP && desiredService.Spec.Type == corev1.ServiceTypeClusterIP {
-		desiredService.Spec.ClusterIP = foundService.Spec.ClusterIP // Keep existing ClusterIP
-	} else if foundService.Spec.Type != corev1.ServiceTypeClusterIP && desiredService.Spec.Type == corev1.ServiceTypeClusterIP {
-		// If changing to ClusterIP from another type that might have allocated one, clear it.
-		// This might not be necessary as K8s handles it, but can be explicit.
-		// desiredService.Spec.ClusterIP = ""
+
+	// 3. Check Selector
+	if !reflect.DeepEqual(foundService.Spec.Selector, desiredService.Spec.Selector) {
+		logger.Info("Service selector mismatch, will update.", "Service.Name", foundService.Name)
+		foundService.Spec.Selector = desiredService.Spec.Selector
+		needsUpdate = true
 	}
-	// Update foundService directly if changes are needed
+
+	// 4. Check Labels (managed by this controller)
+	if !reflect.DeepEqual(foundService.Labels, desiredService.Labels) {
+		logger.Info("Service labels mismatch, will update.", "Service.Name", foundService.Name)
+		foundService.Labels = desiredService.Labels // Ensure controller managed labels are present
+		needsUpdate = true
+	}
+
 	if needsUpdate {
-		// If changing type from LoadBalancer/NodePort to ClusterIP, K8s might clear external IPs/nodeports.
-		// If changing to LoadBalancer/NodePort, K8s will allocate.
-		// For simplicity, we are just assigning the new type and ports.
-		// The existing foundService.Spec.ClusterIP is important to preserve if type is ClusterIP.
-		if foundService.Spec.Type == corev1.ServiceTypeClusterIP { // If current is ClusterIP
-			desiredService.Spec.ClusterIP = foundService.Spec.ClusterIP // Preserve it for the update
-		}
-		// Overwrite spec with desired, but keep existing clusterIP if type is still ClusterIP
-		currentClusterIP := foundService.Spec.ClusterIP
-		foundService.Spec = desiredService.Spec
+		logger.Info("Updating existing Service", "Service.Namespace", foundService.Namespace, "Service.Name", foundService.Name)
+		// Preserve the existing ClusterIP if the service type is already ClusterIP or is being set to ClusterIP
+		// and an IP was already allocated. This is important because ClusterIP is immutable after creation by some CNI.
+		// However, if we are changing other fields, we should let K8s handle it.
+		// The simple foundService.Spec = desiredService.Spec might be too blunt if ClusterIP needs preservation.
+		// Let's explicitly copy fields:
+		existingClusterIP := foundService.Spec.ClusterIP // Save before overwriting spec parts
+
+		foundService.Spec.Ports = desiredService.Spec.Ports
+		foundService.Spec.Selector = desiredService.Spec.Selector
+		foundService.Spec.Type = corev1.ServiceTypeClusterIP // Explicitly ensure type
+
+		// If it was already ClusterIP and had an IP, keep it. Otherwise, let K8s assign one.
 		if foundService.Spec.Type == corev1.ServiceTypeClusterIP {
-			foundService.Spec.ClusterIP = currentClusterIP
+			foundService.Spec.ClusterIP = existingClusterIP
+		} else {
+			// This case should ideally not be hit if we are always reconciling to ClusterIP
+			// and if the type was different, we've already set foundService.Spec.Type to ClusterIP.
+			// If it was some other type before and had a clusterIP (unlikely but possible),
+			// setting Type to ClusterIP and ClusterIP to "" lets K8s allocate a new one.
+			// foundService.Spec.ClusterIP = "" // Let K8s allocate if it wasn't ClusterIP before
 		}
 
-		logger.Info("Updating existing Service", "Service.Namespace", foundService.Namespace, "Service.Name", foundService.Name)
 		err = r.Update(ctx, foundService)
 		if err != nil {
+			r.Recorder.Eventf(app, corev1.EventTypeWarning, ReasonServiceError, "Failed to update Service %s: %v", foundService.Name, err)
 			return nil, fmt.Errorf("failed to update Service: %w", err)
 		}
-		r.Recorder.Event(app, corev1.EventTypeNormal, ReasonServiceUpdated, fmt.Sprintf("Updated Service %s/%s", foundService.Namespace, foundService.Name))
-		return foundService, nil
+		r.Recorder.Eventf(app, corev1.EventTypeNormal, ReasonServiceUpdated, "Updated Service %s/%s", foundService.Namespace, foundService.Name)
+		return foundService, nil // Return the updated service
 	}
 
 	logger.V(1).Info("Service is up-to-date", "Service.Namespace", foundService.Namespace, "Service.Name", foundService.Name)
-	return foundService, nil
+	return foundService, nil // Return existing, up-to-date service
 }
 
 func (r *ApplicationReconciler) reconcileIngress(ctx context.Context, app *appsv1alpha1.Application, serviceName string) (*networkingv1.Ingress, error) {

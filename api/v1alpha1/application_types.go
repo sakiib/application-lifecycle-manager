@@ -17,8 +17,8 @@ limitations under the License.
 package v1alpha1
 
 import (
-	corev1 "k8s.io/api/core/v1"             // For Service spec
-	networkingv1 "k8s.io/api/networking/v1" // For Ingress spec
+	corev1 "k8s.io/api/core/v1"
+	networkingv1 "k8s.io/api/networking/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -76,8 +76,8 @@ type ApplicationServiceSpec struct {
 	// +optional
 	Port *int32 `json:"port,omitempty"`
 
-	// Type is the type of Service to create (e.g., ClusterIP, NodePort, LoadBalancer).
-	// +kubebuilder:validation:Enum=ClusterIP;NodePort;LoadBalancer
+	// Type is the type of Service to create (e.g., ClusterIP, NodePort, LoadBalancer). Only ClusterIP is allowed atm
+	// +kubebuilder:validation:Enum=ClusterIP
 	// +kubebuilder:default=ClusterIP
 	// +optional
 	Type *corev1.ServiceType `json:"type,omitempty"`

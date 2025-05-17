@@ -626,11 +626,9 @@ spec:
                   type:
                     default: ClusterIP
                     description: Type is the type of Service to create (e.g., ClusterIP,
-                      NodePort, LoadBalancer).
+                      NodePort, LoadBalancer). Only ClusterIP is allowed atm
                     enum:
                     - ClusterIP
-                    - NodePort
-                    - LoadBalancer
                     type: string
                 type: object
             required:
