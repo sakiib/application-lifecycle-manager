@@ -1,0 +1,28 @@
+apiVersion: apps.example.com/v1alpha1 # ADJUST YOUR API GROUP
+kind: Application
+metadata:
+  name: my-sample-app
+  namespace: application-lifecycle-manager-system
+spec:
+  replicas: 2
+  image: "nginx:1.25-alpine" # A simple image for testing
+  containerPort: 80
+  service:
+    port: 8080 # Service port can be different from container port
+    type: ClusterIP
+  ingress:
+    host: "my-sample-app.example.com" # You'll need to set up DNS/hosts file for this to resolve
+    path: "/"
+    # ingressClassName: "nginx" # If you have an Ingress controller like Nginx Ingress
+  envVars:
+    - name: APP_ENV
+      value: "production"
+    - name: GREETING
+      value: "Hello from Application CR"
+  resources:
+    requests:
+      cpu: "100m"
+      memory: "128Mi"
+    limits:
+      cpu: "200m"
+      memory: "256Mi"
