@@ -178,7 +178,7 @@ graph LR
         my-sample-app   nginx:1.25-alpine   1          http://my-sample-app.example.com/   True       6s
         ```
     *   **Check the `Application` output yaml structure:**
-        ```sh
+        ```yaml
         apiVersion: apps.example.com/v1alpha1
         kind: Application
         metadata:
