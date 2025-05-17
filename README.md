@@ -68,12 +68,12 @@ graph LR
     B --> E{Ingress};
     B --> F{Env Vars};
     C --> F{Env Vars};
-    style A fill:#f9f,stroke:#333,stroke-width:2px
-    style B fill:#ccf,stroke:#333,stroke-width:2px
-    style C fill:#fcc,stroke:#333,stroke-width:2px
-    style D fill:#fcc,stroke:#333,stroke-width:2px
-    style E fill:#fcc,stroke:#333,stroke-width:2px
-    style F fill:#fcc,stroke:#333,stroke-width:2px
+    style A fill:#b0f0b0,stroke:#808080,stroke-width:2px
+    style B fill:#b0c4de,stroke:#808080,stroke-width:2px
+    style C fill:#f08080,stroke:#808080,stroke-width:2px
+    style D fill:#f08080,stroke:#808080,stroke-width:2px
+    style E fill:#f08080,stroke:#808080,stroke-width:2px
+    style F fill:#f08080,stroke:#808080,stroke-width:2px
 ```
 
 1.  A **User** (or a CI/CD system) defines the desired state of their application by creating or updating an `Application` Custom Resource (CR) via the Kubernetes API Server.
