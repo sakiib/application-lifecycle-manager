@@ -53,7 +53,7 @@ The controller then takes over:
 *   **Core Kubernetes Resources Managed:** `Deployments` (apps/v1), `Services` (core/v1), `Ingresses` (networking.k8s.io/v1).
 *   **Custom Resource:** `Application` CRD (`apps.example.com/v1alpha1` - *adjust group as needed*).
 
-### Architecture Diagram & Control Flow
+## 🧱 Architecture Diagram & Control Flow
 
 ```mermaid
 graph LR
