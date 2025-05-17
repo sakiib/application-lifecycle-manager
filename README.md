@@ -62,7 +62,7 @@ The controller then takes over:
 
 ```mermaid
 graph LR
-    A[Application CRD] --> B(Controller);
+    A[Application CR] --> B(Controller);
     B --> C{Deployment};
     B --> D{Service};
     B --> E{Ingress};
